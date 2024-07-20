@@ -23,7 +23,7 @@ pip install ScrapeMaster
 Here's a simple example of how to use ScrapeMaster:
 
 ```python
-from ScrapeMaster import ScrapeMaster
+from scrapemaster import ScrapeMaster
 
 scraper = ScrapeMaster('https://example.com')
 results = scraper.scrape_all('p', 'img', 'output_images')

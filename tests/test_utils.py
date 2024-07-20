@@ -1,5 +1,5 @@
 import unittest
-from ScrapeMaster.utils import clean_text
+from scrapemaster.utils import clean_text
 
 class TestUtils(unittest.TestCase):
 
