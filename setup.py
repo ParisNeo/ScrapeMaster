@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="scrapemaster",
-    version="0.1.5",
+    version="0.2.0",
     author="ParisNeo",
     author_email="parisneoai@gmail.com",
     description="A versatile web scraping library with multiple techniques",

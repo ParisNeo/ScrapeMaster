@@ -25,6 +25,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from .utils import clean_text
 from pathlib import Path
 from ascii_colors import ASCIIColors
+import re
 class ScrapeMaster:
     def __init__(self, url):
         """
@@ -34,6 +35,7 @@ class ScrapeMaster:
             url (str): The URL of the page to scrape.
         """
         self.url = url
+        self.raw = ""
         self.soup = None
         self.session = requests.Session()
         self.driver = None
@@ -62,6 +64,7 @@ class ScrapeMaster:
         self.set_random_user_agent()
         response = self.session.get(self.url)
         response.raise_for_status()
+        self.raw = response.content.decode()
         self.soup = BeautifulSoup(response.content, 'lxml')
 
     def fetch_page_with_js(self):
@@ -166,6 +169,21 @@ class ScrapeMaster:
         
         self.save_selenium_cookies()
 
+
+
+    def is_markdown(self, text):
+        """Checks if the text contains markdown-like syntax."""
+        markdown_patterns = [
+            r'^\s*#',  # Headers
+            r'\*\*.*\*\*',  # Bold
+            r'\*.*\*',  # Italics
+            r'\[.*\]\(.*\)',  # Links
+            r'`.*`',  # Inline code
+            r'^\s*-\s',  # Unordered lists
+            r'^\s*\d+\.\s',  # Ordered lists
+        ]
+        return any(re.search(pattern, text) for pattern in markdown_patterns)
+
     def scrape_text(self, selectors=None, use_selenium=False):
         """Scrapes text from the page using the provided selectors.
 
@@ -180,12 +198,15 @@ class ScrapeMaster:
             if use_selenium:
                 self.fetch_page_with_js()
             elif not self.soup:
-                    self.fetch_page()
+                self.fetch_page()
         except:
             ASCIIColors.error(f"Couldn't load {self.url}")        
             return []
+
         selectors = selectors or self.default_text_selectors
         texts = []
+
+        # Extract text from the specified selectors
         for selector in selectors:
             elements = self.soup.select(selector)
             for el in elements:
@@ -197,7 +218,12 @@ class ScrapeMaster:
                         texts.append(clean_text(code.get_text()))
                 else:
                     texts.append(clean_text(el.get_text()))
-        
+
+        # Extract any remaining text that might be markdown-like
+        remaining_text = self.raw
+        if self.is_markdown(remaining_text):
+            texts.append(clean_text(remaining_text))
+
         return texts
 
     def scrape_images(self, selectors=None, use_selenium=False):
