@@ -260,14 +260,18 @@ class ScrapeMaster:
         images_dir.mkdir(parents=True, exist_ok=True)  # Ensure the images directory exists
         
         for i, url in enumerate(image_urls):
-            response = self.session.get(url)
-            response.raise_for_status()
-            filename = f"image_{i}.jpg"
-            image_folder = images_dir / f"page_{i}"
-            image_folder.mkdir(parents=True, exist_ok=True)  # Ensure the page directory exists
-            
-            with open(image_folder / filename, 'wb') as f:
-                f.write(response.content)
+            try:
+                response = self.session.get(url)
+                response.raise_for_status()
+                filename = f"image_{i}.jpg"
+                image_folder = images_dir / f"page_{i}"
+                image_folder.mkdir(parents=True, exist_ok=True)  # Ensure the page directory exists
+                
+                with open(image_folder / filename, 'wb') as f:
+                    f.write(response.content)
+            except Exception as ex:
+                pass
+
 
     def scrape_all(self, text_selectors=None, image_selectors=None, output_dir=None, use_selenium=False):
         """Scrapes both text and images from the page and optionally downloads images.
@@ -282,15 +286,24 @@ class ScrapeMaster:
             dict: A dictionary containing scraped texts and image URLs.
         """
         texts = self.scrape_text(text_selectors, use_selenium)
-        image_urls = self.scrape_images(image_selectors, use_selenium)
-        
+
+        try:
+            image_urls = self.scrape_images(image_selectors, use_selenium)
+        except:
+            image_urls = []
+
+
         if output_dir:
-            self.download_images(image_urls, output_dir)
-        
+            try:
+                self.download_images(image_urls, output_dir)
+            except:
+                image_urls = []
+                        
         return {
             'texts': texts,
             'image_urls': image_urls
         }
+
 
     def scrape_website(self, max_depth=2, output_dir='output', prefix='page_'):
         """Recursively scrapes a website by following links up to a specified depth.
