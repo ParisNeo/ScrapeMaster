@@ -1,1 +1,0 @@
-from scrapemaster.core import ScrapeMaster

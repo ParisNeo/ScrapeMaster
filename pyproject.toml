@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scrapemaster"
+version = "0.4.2" # Incremented version
+authors = [
+    { name="ParisNeo", email="parisneo_ai@gmail.com" }, # Replace with your email
+]
+description = "A versatile web scraping library with configurable multi-strategy fetching"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.8" # Updated minimum Python version for newer dependencies/features
+classifiers = [
+    "Development Status :: 4 - Beta", # Updated status
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+
+dependencies = [
+    "requests>=2.25.1",
+    "beautifulsoup4>=4.9.3",
+    "lxml>=4.6.3",
+    "selenium>=4.10.0", # Use a more recent Selenium version
+    "webdriver-manager>=4.0.0",
+    "undetected-chromedriver>=3.1.5", # Use a reasonable version
+    "markdownify>=0.11.6",
+    "pipmaster>=0.7.0", # Add pipmaster
+    "ascii_colors>=0.10.0", # Add ascii_colors used in original code
+]
+
+[tool.setuptools.packages.find]
+where = ["."] 
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.2.4",
+    "flake8>=3.9.2",
+    "black>=22.3.0", # Use a recent Black version
+    "pytest-mock>=3.6.1", # For mocking
+]
+
+[project.urls]
+Homepage = "https://github.com/ParisNeo/ScrapeMaster"
+Issues = "https://github.com/ParisNeo/ScrapeMaster/issues"
+
+[tool.setuptools]
+# If using find:, specify it here too
+# packages = ["find:"]
+
+[tool.black]
+line-length = 88
