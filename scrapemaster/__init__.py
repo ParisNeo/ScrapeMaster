@@ -14,5 +14,3 @@ __all__ = [
     "StrategyError",
     "BlockerDetectedError",
 ]
-
-print("ScrapeMaster package initialized.")
