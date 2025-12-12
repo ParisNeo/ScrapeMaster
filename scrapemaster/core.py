@@ -331,7 +331,7 @@ class ScrapeMaster:
             ASCIIColors.error(error_msg)
             raise ScrapeMasterError(error_msg) from e # Raise general error
 
-    def _run_selenium_attempt(self, driver: webdriver.Chrome | uc.Chrome) -> tuple[str | None, BeautifulSoup | None, str | None]:
+    def _run_selenium_attempt(self, driver: webdriver.Chrome) -> tuple[str | None, BeautifulSoup | None, str | None]:
         """Core logic shared by Selenium and UC strategies."""
         if not self.current_url: return None, None, "No URL set"
         try:
