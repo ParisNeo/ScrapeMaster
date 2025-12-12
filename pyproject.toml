@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrapemaster"
-version = "0.4.3" # Incremented version
+version = "0.4.4" # Incremented version
 authors = [
     { name="ParisNeo", email="parisneo_ai@gmail.com" }, # Replace with your email
 ]
