@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrapemaster"
-version = "0.4.4" # Incremented version
+version = "0.4.5" # Incremented version
 authors = [
     { name="ParisNeo", email="parisneo_ai@gmail.com" }, # Replace with your email
 ]
@@ -38,6 +38,7 @@ dependencies = [
     "markdownify>=0.11.6",
     "pipmaster>=0.7.0", # Add pipmaster
     "ascii_colors>=0.10.0", # Add ascii_colors used in original code
+    "youtube-transcript-api>=0.6.0", # Added for YouTube transcript scraping
 ]
 
 [tool.setuptools.packages.find]

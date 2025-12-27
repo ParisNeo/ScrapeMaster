@@ -7,7 +7,7 @@ import pickle
 import json
 import re
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 # Dependency Management with pipmaster
 try:
@@ -21,6 +21,7 @@ try:
         "undetected-chromedriver",
         "markdownify",
         "ascii_colors",
+        "youtube_transcript_api",
 
     ]) # Added verbose=True for clarity on startup
 except ImportError:
@@ -48,6 +49,13 @@ try:
 except ImportError:
     uc = None # Define uc as None if not available
     UNDETECTED_AVAILABLE = False
+
+# YouTube API Import
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    YOUTUBE_AVAILABLE = True
+except ImportError:
+    YOUTUBE_AVAILABLE = False
 
 # Local Imports
 from .utils import (
@@ -618,11 +626,40 @@ class ScrapeMaster:
     def scrape_markdown(self,
                         content_selectors: list[str] | None = None,
                         noisy_selectors: list[str] | None = None,
-                        fetch_strategy: list[str] | str | None = None) -> str | None:
+                        fetch_strategy: list[str] | str | None = None,
+                        max_depth: int = 0,
+                        crawl_delay: float = 0.5,
+                        allowed_domains: list[str] | None = None
+                        ) -> str | None:
         """
-        Fetches content, identifies the main content area, cleans it (incl. line numbers),
-        and converts to Markdown.
+        Fetches content, identifies the main content area, cleans it, and converts to Markdown.
+        Can optionally crawl links to generate a consolidated Markdown document.
+
+        Args:
+            content_selectors (list[str] | None): Selectors to find the main content.
+            noisy_selectors (list[str] | None): Selectors to remove noise.
+            fetch_strategy (list[str] | str | None): Strategy to use for fetching.
+            max_depth (int): Maximum depth to crawl (0 = single page). Defaults to 0.
+            crawl_delay (float): Delay between requests when crawling.
+            allowed_domains (list[str] | None): Restrict crawling to these domains.
+
+        Returns:
+            str | None: The Markdown content (single page or consolidated), or None on failure.
         """
+        if max_depth > 0:
+            # Delegate to scrape_all for crawling logic
+            results = self.scrape_all(
+                max_depth=max_depth,
+                crawl_delay=crawl_delay,
+                allowed_domains=allowed_domains,
+                content_selectors=content_selectors,
+                noisy_selectors=noisy_selectors,
+                convert_to_markdown=True,
+                fetch_strategy=fetch_strategy
+            )
+            return results['markdown'] if results else None
+
+        # --- Single Page Logic ---
         strategy_to_use = self._resolve_strategy(fetch_strategy) if fetch_strategy else self.strategy
         if not self.current_soup:
             if not self._fetch_content(strategy_to_use):
@@ -721,7 +758,12 @@ class ScrapeMaster:
             except ParsingError as e: ASCIIColors.warning(f"Error scraping images: {e}")
             if convert_to_markdown:
                 try:
-                    results['markdown'] = self.scrape_markdown(content_selectors, noisy_selectors, fetch_strategy=None) # Use already fetched
+                    # Use kw args to avoid confusion with new parameters in scrape_markdown
+                    results['markdown'] = self.scrape_markdown(
+                        content_selectors=content_selectors,
+                        noisy_selectors=noisy_selectors,
+                        fetch_strategy=None
+                    ) 
                 except ParsingError as e: ASCIIColors.warning(f"Error converting to markdown: {e}")
 
             if download_images_output_dir and results['image_urls']:
@@ -804,7 +846,12 @@ class ScrapeMaster:
                     except ParsingError as e: ASCIIColors.warning(f"Error scraping images on {current_url}: {e}")
                     if convert_to_markdown:
                         try:
-                            page_markdown = self.scrape_markdown(content_selectors, noisy_selectors, fetch_strategy=None)
+                            # Use kw args explicitly
+                            page_markdown = self.scrape_markdown(
+                                content_selectors=content_selectors,
+                                noisy_selectors=noisy_selectors,
+                                fetch_strategy=None
+                            )
                             if page_markdown:
                                  # Add URL separator/header for combined markdown
                                  aggregated_markdown.append(f"\n\n## Scraped Content from: {current_url}\n\n---\n\n{page_markdown}")
@@ -851,6 +898,144 @@ class ScrapeMaster:
                 'visited_urls': successfully_visited,
                 'failed_urls': failed_urls
             }
+    
+    # --- YouTube Transcript Methods ---
+
+    def _extract_youtube_id(self, url_or_id: str) -> str:
+        """Helper to extract YouTube video ID from a URL or return the ID if it looks like one."""
+        # Simple check for direct ID (11 chars, no spaces/slashes)
+        if len(url_or_id) == 11 and ' ' not in url_or_id and '/' not in url_or_id:
+             return url_or_id
+        
+        # Regex for common YouTube URL formats
+        # Matches: v=ID, embed/ID, youtu.be/ID, v/ID
+        patterns = [
+            r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
+            r'(?:embed\/)([0-9A-Za-z_-]{11})',
+            r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, url_or_id)
+            if match:
+                return match.group(1)
+        
+        raise ValueError(f"Could not extract YouTube video ID from: {url_or_id}")
+
+    def get_youtube_languages(self, url_or_id: str) -> list[dict] | None:
+        """
+        Retrieves a list of available transcript languages for a YouTube video.
+        
+        Args:
+            url_or_id (str): The YouTube video URL or ID.
+            
+        Returns:
+            list[dict] | None: A list of dictionaries containing language code, name, and type,
+                               or None if retrieval fails/API unavailable.
+        """
+        if not YOUTUBE_AVAILABLE:
+            ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
+            return None
+        
+        try:
+            video_id = self._extract_youtube_id(url_or_id)
+            ASCIIColors.info(f"Fetching available transcript languages for video: {video_id}")
+            
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            languages = []
+            
+            # Helper to format transcript info
+            def get_info(t):
+                return {
+                    "code": t.language_code,
+                    "name": t.language,
+                    "is_generated": t.is_generated,
+                    "is_translatable": t.is_translatable
+                }
+
+            # Collect manually created transcripts
+            for t in transcript_list._manually_created_transcripts.values():
+                languages.append(get_info(t))
+                
+            # Collect generated transcripts
+            for t in transcript_list._generated_transcripts.values():
+                languages.append(get_info(t))
+                
+            return languages
+
+        except Exception as e:
+            self.last_error = f"Error fetching YouTube languages: {e}"
+            ASCIIColors.error(self.last_error)
+            return None
+
+    def scrape_youtube_transcript(self, url_or_id: str, language_code: str | None = None) -> str | None:
+        """
+        Scrapes the transcript text from a YouTube video.
+        
+        Args:
+            url_or_id (str): The YouTube video URL or ID.
+            language_code (str | None): Specific language code (e.g., 'en', 'es').
+                                      If None, attempts to find the default (preferring manual over generated).
+        
+        Returns:
+            str | None: The transcript text combined into a single string, or None on failure.
+        """
+        if not YOUTUBE_AVAILABLE:
+            ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
+            return None
+
+        try:
+            video_id = self._extract_youtube_id(url_or_id)
+            ASCIIColors.info(f"Fetching transcript for video: {video_id}")
+
+            if language_code:
+                # User specified a language
+                ASCIIColors.info(f"Attempting to fetch transcript for language: {language_code}")
+                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language_code])
+            else:
+                # Auto-detect: Prefer manual -> then generated -> then fallback
+                ASCIIColors.info("No language specified. Searching for available transcripts (Manual > Generated)...")
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                
+                target_transcript = None
+                
+                # Try to find a manually created transcript first
+                try:
+                    # Iterate manually created dict values
+                    for t in transcript_list._manually_created_transcripts.values():
+                        target_transcript = t
+                        break # Take the first manual one
+                except Exception: pass
+                
+                # If no manual, try generated
+                if not target_transcript:
+                    try:
+                        for t in transcript_list._generated_transcripts.values():
+                            target_transcript = t
+                            break
+                    except Exception: pass
+                
+                if target_transcript:
+                    ASCIIColors.info(f"Selected transcript: {target_transcript.language} ({target_transcript.language_code}) "
+                                     f"[{'Generated' if target_transcript.is_generated else 'Manual'}]")
+                    transcript_data = target_transcript.fetch()
+                else:
+                    # Fallback to API default behavior (usually English or video default)
+                    ASCIIColors.warning("Could not explicitly select a transcript. Falling back to API default.")
+                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+
+            # Join the text parts
+            full_text = " ".join([entry['text'] for entry in transcript_data])
+            # Basic cleanup of HTML entities/whitespace often found in transcripts
+            full_text = re.sub(r'\s+', ' ', full_text).strip()
+            
+            ASCIIColors.success("YouTube transcript fetched successfully.")
+            return full_text
+
+        except Exception as e:
+            self.last_error = f"Error fetching YouTube transcript: {e}"
+            ASCIIColors.error(self.last_error)
+            return None
 
     # --- Utility and Session Management Methods ---
 

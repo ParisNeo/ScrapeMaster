@@ -36,12 +36,13 @@
 
 **ScrapeMaster** is a comprehensive Python library that simplifies the complexities of web scraping. It intelligently switches between multiple scraping strategies—from simple `requests` to browser automation with `Selenium` and `undetected-chromedriver`—to ensure you get the data you need, when you need it.
 
-Whether you're extracting text, downloading images, converting articles to clean Markdown, or crawling entire websites, ScrapeMaster provides a unified and powerful API to handle it all.
+Whether you're extracting text, downloading images, converting articles to clean Markdown, crawling entire websites, or even fetching YouTube transcripts, ScrapeMaster provides a unified and powerful API to handle it all.
 
 ## ✨ Key Features
 
 -   **Multi-Strategy Scraping**: Automatically tries different methods (`requests`, `Selenium`, `undetected-chromedriver`) to bypass anti-bot measures and handle JavaScript-rendered content.
 -   **Content-to-Markdown**: Intelligently extracts the main content from a webpage, removes noise (like headers, footers, ads), and converts it into clean, readable Markdown.
+-   **YouTube Transcripts**: Built-in support for fetching video transcripts (manual or auto-generated) via the `youtube-transcript-api`.
 -   **Comprehensive Data Extraction**: Easily scrape text, images, and other structured data using CSS selectors.
 -   **Website Crawler**: Recursively scrape an entire website by following links up to a specified depth, with domain restrictions to keep the crawl focused.
 -   **Anti-Bot Circumvention**: Utilizes `undetected-chromedriver` and rotates user agents to appear more like a human user and avoid common blockers.
@@ -57,7 +58,7 @@ You can install ScrapeMaster directly from PyPI:
 pip install ScrapeMaster
 ```
 
-The library uses `pipmaster` to automatically manage and install its dependencies (like `requests`, `selenium`, etc.) upon first use, ensuring a smooth setup process.
+The library uses `pipmaster` to automatically manage and install its dependencies (like `requests`, `selenium`, `youtube-transcript-api`, etc.) upon first use, ensuring a smooth setup process.
 
 ## Usage Examples
 
@@ -151,6 +152,31 @@ if results:
     print(f"Successfully visited {len(results['visited_urls'])} pages.")
     print(f"Found {len(results['texts'])} text fragments.")
     print(f"Found and downloaded {len(results['image_urls'])} unique images.")
+```
+
+### 5. Scraping YouTube Transcripts
+
+Retrieve transcripts from YouTube videos. You can list available languages and fetch the transcript text (preferring manually created ones over auto-generated).
+
+```python
+from scrapemaster import ScrapeMaster
+
+scraper = ScrapeMaster()
+video_url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+
+# 1. List available languages
+languages = scraper.get_youtube_languages(video_url)
+if languages:
+    print("Available Languages:")
+    for lang in languages:
+        print(f"- {lang['code']}: {lang['name']} ({'Generated' if lang['is_generated'] else 'Manual'})")
+
+# 2. Fetch the transcript (Auto-detects best available, or pass language_code='en')
+transcript = scraper.scrape_youtube_transcript(video_url)
+
+if transcript:
+    print("\n--- Transcript Preview ---")
+    print(transcript[:500] + "...") 
 ```
 
 ## Core Concepts
