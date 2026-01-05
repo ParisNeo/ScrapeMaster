@@ -58,11 +58,24 @@ DEFAULT_NOISY_SELECTORS = [
 ]
 
 # Phrases indicating a JavaScript/Cookie/Captcha blocker page (case-insensitive)
+# UPDATED: Made phrases more specific to avoid false positives in article text
 BLOCKER_PHRASES = [
-    "enable javascript", "enable cookies", "checking your browser",
-    "redirecting", "cloudflare", "verify you are human", "js challenge",
-    "please wait", "needs javascript to function", "one moment please",
-    "checking browser", "access denied", "security check", "captcha"
+    "please enable javascript", 
+    "javascript is required",
+    "javascript is disabled",
+    "enable cookies to continue", 
+    "browser check running",
+    "checking your browser",
+    "redirecting to secure",
+    "cloudflare-ray", 
+    "verify you are human", 
+    "security challenge",
+    "please wait while we", 
+    "one moment please",
+    "access denied error", 
+    "security check required",
+    "complete the captcha",
+    "captcha verification"
 ]
 BLOCKER_REGEX = re.compile('|'.join(BLOCKER_PHRASES), re.IGNORECASE)
 
@@ -84,8 +97,6 @@ def clean_text(text: str) -> str:
         return ""
     # Replace multiple whitespace characters (including newlines, tabs) with a single space
     text = re.sub(r'\s+', ' ', text).strip()
-    # Optional: Add more specific cleaning rules here if needed
-    # e.g., remove specific unicode characters, normalize quotes, etc.
     return text
 
 def check_for_blocker(html_content: str) -> bool:
@@ -96,8 +107,8 @@ def check_for_blocker(html_content: str) -> bool:
     text_sample = html_content[:8192].lower() # Increased sample size slightly
     is_blocker = BLOCKER_REGEX.search(text_sample)
     if is_blocker:
-        # Optional: Add more sophisticated checks, e.g., very low content diversity
-        # or presence of specific known blocker script URLs
+        # Debug print to verify what triggered it (can be removed in prod)
+        # print(f"Blocker detected by phrase: {is_blocker.group()}")
         pass
     return bool(is_blocker)
 
@@ -141,6 +152,5 @@ def remove_noisy_elements(content_element: BeautifulSoup, noisy_selectors: list 
                 count += 1
         except Exception as e_decompose:
             # Log warning or ignore errors from invalid selectors/decomposition
-            # print(f"Warning: Error decomposing element with selector '{noisy_selector}': {e_decompose}")
             pass
     return count

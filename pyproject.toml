@@ -4,21 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrapemaster"
-version = "0.4.5" # Incremented version
+version = "0.5.0" # Major feature update
 authors = [
-    { name="ParisNeo", email="parisneo_ai@gmail.com" }, # Replace with your email
+    { name="ParisNeo", email="parisneo_ai@gmail.com" },
 ]
-description = "A versatile web scraping library with configurable multi-strategy fetching"
+description = "A versatile web scraping library with configurable multi-strategy fetching and specialized handlers"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.8" # Updated minimum Python version for newer dependencies/features
+requires-python = ">=3.9" 
 classifiers = [
-    "Development Status :: 4 - Beta", # Updated status
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -32,13 +31,15 @@ dependencies = [
     "requests>=2.25.1",
     "beautifulsoup4>=4.9.3",
     "lxml>=4.6.3",
-    "selenium>=4.10.0", # Use a more recent Selenium version
+    "selenium>=4.10.0",
     "webdriver-manager>=4.0.0",
-    "undetected-chromedriver>=3.1.5", # Use a reasonable version
+    "undetected-chromedriver>=3.1.5",
     "markdownify>=0.11.6",
-    "pipmaster>=0.7.0", # Add pipmaster
-    "ascii_colors>=0.10.0", # Add ascii_colors used in original code
-    "youtube-transcript-api>=0.6.0", # Added for YouTube transcript scraping
+    "pipmaster>=0.7.0",
+    "ascii_colors>=0.10.0",
+    "youtube-transcript-api>=0.6.0",
+    "wikipedia>=1.4.0", # Added specific library
+    "docling>=1.0.0",   # Added docling
 ]
 
 [tool.setuptools.packages.find]
@@ -48,8 +49,8 @@ where = ["."]
 dev = [
     "pytest>=6.2.4",
     "flake8>=3.9.2",
-    "black>=22.3.0", # Use a recent Black version
-    "pytest-mock>=3.6.1", # For mocking
+    "black>=22.3.0",
+    "pytest-mock>=3.6.1",
 ]
 
 [project.urls]

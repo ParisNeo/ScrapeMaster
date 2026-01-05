@@ -7,7 +7,7 @@ import pickle
 import json
 import re
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote
 
 # Dependency Management with pipmaster
 try:
@@ -22,8 +22,9 @@ try:
         "markdownify",
         "ascii_colors",
         "youtube_transcript_api",
-
-    ]) # Added verbose=True for clarity on startup
+        "wikipedia",
+        "docling"
+    ]) 
 except ImportError:
     print("Warning: pipmaster not found. Please install it ('pip install pipmaster') for automatic dependency management.")
 except Exception as e:
@@ -47,7 +48,7 @@ try:
     import undetected_chromedriver as uc
     UNDETECTED_AVAILABLE = True
 except ImportError:
-    uc = None # Define uc as None if not available
+    uc = None 
     UNDETECTED_AVAILABLE = False
 
 # YouTube API Import
@@ -56,6 +57,21 @@ try:
     YOUTUBE_AVAILABLE = True
 except ImportError:
     YOUTUBE_AVAILABLE = False
+
+# Wikipedia Library Import
+try:
+    import wikipedia
+    WIKIPEDIA_AVAILABLE = True
+except ImportError:
+    WIKIPEDIA_AVAILABLE = False
+
+# Docling Import
+try:
+    from docling.document_converter import DocumentConverter
+    DOCLING_AVAILABLE = True
+except ImportError:
+    DOCLING_AVAILABLE = False
+
 
 # Local Imports
 from .utils import (
@@ -69,37 +85,31 @@ from .exceptions import (
 )
 
 # Available strategies
-SUPPORTED_STRATEGIES = ["requests", "selenium", "undetected"]
-DEFAULT_STRATEGY_ORDER = ["requests", "selenium", "undetected"]
+SUPPORTED_STRATEGIES = ["requests", "selenium", "undetected", "wikipedia", "docling"]
+DEFAULT_STRATEGY_ORDER = ["wikipedia", "requests", "selenium", "undetected"] 
 
 def _clean_markdown_code_blocks(markdown_text: str) -> str:
     """Uses regex to remove lines containing only numbers within Markdown code blocks."""
     if not markdown_text or "```" not in markdown_text:
-        return markdown_text # No code blocks found or empty text
+        return markdown_text 
 
     cleaned_lines = []
     in_code_block = False
-    # Pattern to match a line containing optional whitespace, one or more digits, optional dot, and optional whitespace
     line_number_pattern = re.compile(r"^\s*\d+\.?\s*$")
 
     for line in markdown_text.splitlines():
-        # Toggle code block state
         if line.strip().startswith("```"):
             in_code_block = not in_code_block
-            cleaned_lines.append(line) # Keep the fence itself
+            cleaned_lines.append(line) 
             continue
 
-        # If inside a code block, check if the line is just a line number
         if in_code_block:
             if line_number_pattern.match(line):
-                # Skip this line (it's likely a line number)
                 ASCIIColors.debug(f"Skipping likely line number in code block: '{line.strip()}'")
                 continue
             else:
-                # Keep the actual code line
                 cleaned_lines.append(line)
         else:
-            # Outside a code block, keep the line as is
             cleaned_lines.append(line)
 
     return "\n".join(cleaned_lines)
@@ -125,28 +135,7 @@ def _parse_and_markdownify(html_content: str,
         removed_noise_count = remove_noisy_elements(main_content_element, noisy_selectors)
         ASCIIColors.debug(f"Removed {removed_noise_count} general noisy elements.")
 
-        # --- Attempt Code Block Line Number Cleaning (Optional - Keep or Remove based on testing) ---
-        # Keeping the previous HTML-based cleaning might still be useful for some sites,
-        # but the Markdown post-processing is likely more reliable for this specific case.
-        # You can comment out this block if the post-processing works well.
-        code_blocks_cleaned_count = 0
-        pre_tags = main_content_element.find_all('pre')
-        if pre_tags:
-            ASCIIColors.debug(f"Found {len(pre_tags)} <pre> tags. Attempting HTML line number removal...")
-            # ... (Keep the HTML cleaning code from the previous attempt if desired) ...
-            # Example: Remove common classes
-            line_number_classes = ['.lineno', '.line-number', '.line-numbers', '.gutter', '.line-numbers-rows']
-            for pre_tag in pre_tags:
-                for ln_class in line_number_classes:
-                    try:
-                        elements_to_remove = pre_tag.select(ln_class)
-                        for el in elements_to_remove: el.decompose(); code_blocks_cleaned_count += 1
-                    except Exception: pass
-            if code_blocks_cleaned_count > 0:
-                ASCIIColors.debug(f"Removed {code_blocks_cleaned_count} potential HTML line number elements.")
-        # --- End Optional HTML Code Block Cleaning ---
-
-        # Check for blocker message
+        # Check for blocker message (Double check after cleaning)
         cleaned_text_sample = main_content_element.get_text(strip=True)[:500].lower()
         if check_for_blocker(cleaned_text_sample):
              ASCIIColors.warning("Content container holds blocker message after cleaning.")
@@ -158,71 +147,68 @@ def _parse_and_markdownify(html_content: str,
         markdown_text = md(html_string, heading_style="ATX", escape_underscores=False, default_title=True)
 
         # --- Post-processing ---
-        # 1. Basic whitespace cleanup
         markdown_text = re.sub(r'\n{3,}', '\n\n', markdown_text).strip()
-        # 2. NEW: Clean line numbers from code blocks
         markdown_text = _clean_markdown_code_blocks(markdown_text)
-        # --- End Post-processing ---
 
         ASCIIColors.success("Markdown conversion and cleaning complete.")
-        return markdown_text, None # Success
+        return markdown_text, None 
 
     except Exception as e:
         import traceback
         error_msg = f"Error during parsing/markdownify: {e}"
         ASCIIColors.error(error_msg)
-        ASCIIColors.error(traceback.format_exc())
         raise ParsingError(error_msg) from e
 
 class ScrapeMaster:
     """
-    A versatile web scraping class using multiple strategies (requests, Selenium, undetected-chromedriver)
+    A versatile web scraping class using multiple strategies (requests, Selenium, undetected, wikipedia, docling)
     for fetching and extracting web content, including Markdown conversion.
     """
     def __init__(self, url: str | None = None, strategy: list[str] | str = 'auto', headless: bool = True):
-        """
-        Initializes the ScrapeMaster.
-
-        Args:
-            url (str, optional): The initial URL to target. Can be set later via `set_url`. Defaults to None.
-            strategy (list[str] | str): The scraping strategy or list of strategies to use.
-                - 'auto': Use the default order ['requests', 'selenium', 'undetected'].
-                - list[str]: A list containing 'requests', 'selenium', and/or 'undetected' in the desired order.
-                Defaults to 'auto'.
-            headless (bool): Whether to run Selenium/undetected-chromedriver in headless mode. Defaults to True.
-                                Note: Setting to False might be required for some sites but will show browser windows.
-        """
         self._validate_url(url)
         self.initial_url = url
         self.current_url = url
-        self.strategy = self._resolve_strategy(strategy)
         self.headless = headless
+        self.strategy = self._resolve_strategy(strategy) # Resolve after setting URL to auto-detect wiki
 
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
-        self.driver = None # Stores the active Selenium/UC driver instance
-        self.current_soup = None # Stores the BeautifulSoup object from the last successful fetch
-        self.html_content = "" # Stores the raw HTML from the last successful fetch
-        self.last_error = None # Stores the last significant error message
-        self.last_strategy_used = None # Stores the strategy that succeeded
+        self.driver = None 
+        self.current_soup = None 
+        self.html_content = "" 
+        self.last_error = None 
+        self.last_strategy_used = None
 
-        self.user_agents = list(DEFAULT_HEADERS.values()) # Simplified user agent list for now
+        self.user_agents = list(DEFAULT_HEADERS.values()) 
 
         print(f"ScrapeMaster initialized. Strategy: {self.strategy}, Headless: {self.headless}")
         if 'undetected' in self.strategy and not UNDETECTED_AVAILABLE:
-            ASCIIColors.warning("Specified 'undetected' strategy, but undetected-chromedriver library is not available.")
+            ASCIIColors.warning("Specified 'undetected' strategy, but library is not available.")
 
     def _validate_url(self, url: str | None):
-        """Validates the provided URL."""
         if url is not None and not is_valid_url(url):
             raise ValueError(f"Invalid initial URL provided: {url}")
 
     def _resolve_strategy(self, strategy: list[str] | str) -> list[str]:
-        """Resolves the strategy argument into a validated list."""
+        """Resolves the strategy argument into a validated list, handling 'auto' logic."""
         if strategy == 'auto':
-            return DEFAULT_STRATEGY_ORDER
+            # Dynamic strategy ordering based on URL
+            strat_order = list(DEFAULT_STRATEGY_ORDER)
+            
+            # If explicit Wikipedia URL, ensure wikipedia strategy is first
+            if self.current_url and "wikipedia.org" in self.current_url:
+                if "wikipedia" in strat_order:
+                    strat_order.remove("wikipedia")
+                strat_order.insert(0, "wikipedia")
+                ASCIIColors.info("Wikipedia URL detected: Prioritizing 'wikipedia' library strategy.")
+            elif "wikipedia" in strat_order:
+                # If not a wiki url, move wikipedia to end or remove it to save time
+                strat_order.remove("wikipedia")
+            
+            return [s for s in strat_order if s in SUPPORTED_STRATEGIES]
+
         if isinstance(strategy, str):
-            strategy = [strategy] # Allow single string strategy
+            strategy = [strategy]
         if not isinstance(strategy, list):
             raise ValueError("Strategy must be 'auto' or a list of strings.")
 
@@ -237,20 +223,18 @@ class ScrapeMaster:
         return validated_strategy
 
     def set_url(self, url: str):
-        """Sets or updates the target URL."""
         self._validate_url(url)
         self.current_url = url
-        self.current_soup = None # Reset soup when URL changes
+        self.current_soup = None 
         self.html_content = ""
         self.last_error = None
+        # Re-evaluate auto strategy order if using auto, but simple init usually enough
         ASCIIColors.info(f"Target URL set to: {url}")
 
     def get_last_error(self) -> str | None:
-        """Returns the last recorded error message."""
         return self.last_error
 
     def _get_driver_path(self) -> str | None:
-        """Gets the ChromeDriver path using webdriver-manager."""
         try:
             ASCIIColors.debug("Getting ChromeDriver path via webdriver-manager...")
             driver_path = ChromeDriverManager().install()
@@ -262,20 +246,19 @@ class ScrapeMaster:
             return None
 
     def _setup_selenium_options(self, for_undetected: bool = False) -> webdriver.ChromeOptions:
-        """Configures Chrome options for Selenium/UC."""
         options = webdriver.ChromeOptions()
         if self.headless:
             options.add_argument("--headless=new")
-        else:
-            ASCIIColors.info("*** RUNNING IN NON-HEADLESS (VISIBLE BROWSER) MODE ***")
-
-        options.add_argument("--disable-gpu"); options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage"); options.add_argument(f"user-agent={self.session.headers['User-Agent']}")
-        options.add_argument("window-size=1920,1080"); options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--log-level=3") # Suppress console logs
+        
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument(f"user-agent={self.session.headers['User-Agent']}")
+        options.add_argument("window-size=1920,1080")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--log-level=3") 
 
         if not for_undetected:
-            # Apply options potentially conflicting with UC only for standard Selenium
             options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
             options.add_experimental_option('useAutomationExtension', False)
             prefs = {"profile.default_content_setting_values.cookies": 1, "profile.default_content_setting_values.javascript": 1}
@@ -283,7 +266,6 @@ class ScrapeMaster:
         return options
 
     def _quit_driver(self):
-        """Safely quits the Selenium driver if it exists."""
         if self.driver:
             try:
                 self.driver.quit()
@@ -294,17 +276,97 @@ class ScrapeMaster:
                 self.driver = None
 
     def __del__(self):
-        """Ensures the driver is quit when the object is garbage collected."""
         self._quit_driver()
 
     # --- Strategy Implementations ---
+
+    def _try_wikipedia(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
+        """Attempts to fetch content using the official Wikipedia library."""
+        if not WIKIPEDIA_AVAILABLE:
+            return None, None, "wikipedia library not installed"
+        
+        ASCIIColors.info("-- Strategy: Trying 'wikipedia' library --")
+        try:
+            parsed = urlparse(self.current_url)
+            if "wikipedia.org" not in parsed.netloc:
+                return None, None, "Not a Wikipedia URL"
+
+            # Extract language (e.g., 'fr.wikipedia.org' -> 'fr')
+            parts = parsed.netloc.split('.')
+            if len(parts) >= 3:
+                lang = parts[0]
+                wikipedia.set_lang(lang)
+            
+            # Extract title (e.g., /wiki/Python_(programming_language))
+            path_parts = parsed.path.split('/')
+            if len(path_parts) > 2 and path_parts[1] == 'wiki':
+                title = unquote(path_parts[2])
+            else:
+                return None, None, "Could not parse Wikipedia title from URL"
+
+            ASCIIColors.info(f"Fetching Wikipedia page: {title} ({lang if 'lang' in locals() else 'default'})")
+            page = wikipedia.page(title, auto_suggest=False)
+            
+            html_content = page.html()
+            soup = BeautifulSoup(html_content, 'lxml')
+            ASCIIColors.success("Wikipedia: Fetch and parse successful.")
+            return html_content, soup, None
+
+        except wikipedia.exceptions.DisambiguationError as e:
+            return None, None, f"Wikipedia Ambiguity: {e}"
+        except wikipedia.exceptions.PageError:
+            return None, None, "Wikipedia Page Not Found"
+        except Exception as e:
+            return None, None, f"Wikipedia Strategy Error: {e}"
+
+    def _try_docling(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
+        """Attempts to fetch and parse using Docling."""
+        if not DOCLING_AVAILABLE:
+            return None, None, "docling library not installed"
+            
+        ASCIIColors.info("-- Strategy: Trying 'docling' --")
+        try:
+            converter = DocumentConverter()
+            ASCIIColors.info(f"Docling converting: {self.current_url}")
+            # Docling handles fetching internally
+            result = converter.convert(self.current_url)
+            
+            # Docling works best for Markdown export, but we need HTML/Soup for the generic pipeline.
+            # We can export to HTML if supported, or Markdown.
+            # Docling's `export_to_html` is not always available in all versions, let's check.
+            # If unavailable, we might need to rely on markdown content primarily.
+            
+            # However, to fit into _fetch_content structure, we need HTML.
+            # Docling stores internal structure. 
+            # Strategy: Convert Docling structure to HTML-like string or rely on `scrape_markdown` bypassing soup.
+            # For now, we will try to get HTML. If not, we generate a simple HTML wrapper around the markdown 
+            # so that `scrape_text` and `soup` operations don't crash.
+            
+            markdown_content = result.document.export_to_markdown()
+            
+            # Wrap in HTML for compatibility
+            html_wrapper = f"<html><body><main>{md(markdown_content)}</main></body></html>" # Reverse MD to HTML (not ideal)
+            # Actually, `markdown` lib can convert MD to HTML
+            try:
+                import markdown
+                html_content = markdown.markdown(markdown_content)
+                html_content = f"<html><body>{html_content}</body></html>"
+            except ImportError:
+                html_content = f"<html><body><pre>{markdown_content}</pre></body></html>"
+
+            soup = BeautifulSoup(html_content, 'lxml')
+            ASCIIColors.success("Docling: Conversion successful.")
+            return html_content, soup, None
+
+        except Exception as e:
+            return None, None, f"Docling Error: {e}"
 
     def _try_requests(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
         """Attempts fetching with the requests library."""
         ASCIIColors.info("-- Strategy: Trying simple HTTP request (requests) --")
         if not self.current_url: return None, None, "No URL set"
         try:
-            self.set_random_user_agent() # Rotate user agent
+            self.set_random_user_agent() 
             response = self.session.get(self.current_url, timeout=25)
             ASCIIColors.debug(f"Requests Status Code: {response.status_code}")
 
@@ -312,39 +374,37 @@ class ScrapeMaster:
             if 'text/html' not in content_type:
                 return None, None, f"Non-HTML content type received: {content_type}"
 
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            response.raise_for_status() 
             html_content = response.content.decode(response.encoding or 'utf-8', errors='ignore')
 
             if check_for_blocker(html_content):
                 ASCIIColors.warning("Requests: Blocker page detected.")
-                return None, None, "Blocker page detected" # Signal blocker
+                return None, None, "Blocker page detected" 
 
             soup = BeautifulSoup(html_content, 'lxml')
             ASCIIColors.success("Requests: Fetch and parse successful.")
-            return html_content, soup, None # Success
+            return html_content, soup, None 
 
         except requests.exceptions.RequestException as e:
             error_msg = f"Requests Error: {e}"
             ASCIIColors.error(error_msg)
-            # Return specific error types for better handling later
             if hasattr(e, 'response') and e.response is not None:
                  if e.response.status_code == 403:
-                     return None, None, "Requests: 403 Forbidden" # Signal blocker/permission issue
+                     return None, None, "Requests: 403 Forbidden" 
                  else:
                      return None, None, f"Requests: HTTP Error {e.response.status_code}"
-            else: # Network error, timeout etc.
-                raise PageFetchError(error_msg) from e # Raise definitive fetch error
+            else: 
+                raise PageFetchError(error_msg) from e 
         except Exception as e:
             error_msg = f"Requests: Unexpected error: {e}"
             ASCIIColors.error(error_msg)
-            raise ScrapeMasterError(error_msg) from e # Raise general error
+            raise ScrapeMasterError(error_msg) from e 
 
     def _run_selenium_attempt(self, driver: webdriver.Chrome) -> tuple[str | None, BeautifulSoup | None, str | None]:
         """Core logic shared by Selenium and UC strategies."""
         if not self.current_url: return None, None, "No URL set"
         try:
             driver.set_page_load_timeout(45)
-            # Use small implicit wait mainly for initial element presence checks
             driver.implicitly_wait(3)
 
             ASCIIColors.info("Navigating to URL...")
@@ -359,11 +419,7 @@ class ScrapeMaster:
             if not body_present:
                 raise StrategyError("Body element not found after wait.")
 
-            # Optional: Add specific element wait if needed, but often waiting for body
-            #           and then checking for blockers is sufficient for UC.
-            # Example: wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, DEFAULT_CONTENT_SELECTORS[0])))
-
-            time.sleep(2) # Short pause for JS rendering after load signal
+            time.sleep(2) 
 
             ASCIIColors.info("Retrieving page source...")
             html_content = driver.page_source
@@ -372,32 +428,30 @@ class ScrapeMaster:
 
             if check_for_blocker(html_content):
                 ASCIIColors.warning("Selenium/UC: Blocker page detected after wait.")
-                return None, None, "Blocker page detected" # Signal blocker
+                return None, None, "Blocker page detected" 
 
             ASCIIColors.info("Parsing HTML with BeautifulSoup...")
             soup = BeautifulSoup(html_content, 'lxml')
             ASCIIColors.success("Selenium/UC: Fetch and parse successful.")
-            return html_content, soup, None # Success
+            return html_content, soup, None 
 
         except TimeoutException:
             error_msg = f"Selenium/UC: Timed out waiting for page elements ({wait_time}s)."
             ASCIIColors.error(error_msg)
-            # Check if we got a blocker page even on timeout
             try:
                 html_on_timeout = driver.page_source
                 if check_for_blocker(html_on_timeout):
                     return None, None, "Blocker page detected (on timeout)"
-            except Exception: pass # Ignore errors checking source on timeout
-            return None, None, error_msg # Return timeout error
+            except Exception: pass 
+            return None, None, error_msg 
         except WebDriverException as e:
-            error_msg = f"Selenium/UC: WebDriver Error: {e.msg[:500]}" # Limit error message length
+            error_msg = f"Selenium/UC: WebDriver Error: {e.msg[:500]}"
             ASCIIColors.error(error_msg)
-            # Don't raise here, return error message to allow main loop to handle/retry
             return None, None, error_msg
         except Exception as e:
             error_msg = f"Selenium/UC: Unexpected error during run: {e}"
             ASCIIColors.error(error_msg)
-            raise StrategyError(error_msg) from e # Raise strategy error
+            raise StrategyError(error_msg) from e 
 
     def _try_selenium(self, use_undetected: bool) -> tuple[str | None, BeautifulSoup | None, str | None]:
         """Attempts fetching with Selenium or undetected-chromedriver."""
@@ -408,26 +462,37 @@ class ScrapeMaster:
             return None, None, "undetected-chromedriver library not available"
 
         driver_path = self._get_driver_path()
-        if not driver_path and not use_undetected: # Standard selenium needs the path found by manager
+        if not driver_path and not use_undetected: 
              raise DriverInitializationError(self.last_error or "Could not get driver path.")
-        elif not driver_path and use_undetected:
-             ASCIIColors.warning("Could not get driver path via manager, UC will try auto-detection.")
-             # UC might still work if chromedriver is in PATH or its cache
-
+        
         options = self._setup_selenium_options(for_undetected=use_undetected)
-        self._quit_driver() # Ensure no previous driver is running
+        self._quit_driver() 
 
         try:
             ASCIIColors.info(f"Initializing {driver_type}...")
             start_time = time.time()
             if use_undetected:
-                self.driver = uc.Chrome(
-                    driver_executable_path=driver_path if driver_path else None, # Allow UC to auto-detect if manager failed
-                    options=options,
-                    version_main=119, # Optional: Specify major Chrome version if needed
-                    headless=self.headless,
-                    use_subprocess=True # Often helps with stability/evasion
-                )
+                # Undetected Chromedriver often manages its own binary better than WDM
+                # Try letting it auto-detect first if WDM path isn't strictly enforced
+                try:
+                    self.driver = uc.Chrome(
+                        options=options,
+                        version_main=None, # Auto-detect version
+                        headless=self.headless,
+                        use_subprocess=True
+                    )
+                except WebDriverException as uc_e:
+                    ASCIIColors.warning(f"UC auto-init failed: {uc_e}. Retrying with manual path...")
+                    if driver_path:
+                         self.driver = uc.Chrome(
+                            driver_executable_path=driver_path,
+                            options=options,
+                            headless=self.headless,
+                            use_subprocess=True
+                        )
+                    else:
+                        raise uc_e
+
             else:
                 service = ChromeService(executable_path=driver_path)
                 self.driver = webdriver.Chrome(service=service, options=options)
@@ -435,31 +500,30 @@ class ScrapeMaster:
             init_time = time.time() - start_time
             ASCIIColors.debug(f"{driver_type} initialized in {init_time:.2f}s.")
 
-            # Run the core fetching logic
             return self._run_selenium_attempt(self.driver)
 
         except WebDriverException as e:
             error_msg = f"{driver_type} Initialization/Run Error: {e.msg[:500]}"
             ASCIIColors.error(error_msg)
-            self._quit_driver() # Clean up failed driver
-            # Raise specific error if init failed, return message if run failed
-            if "initialized" not in locals(): # Check if error happened during init
+            self._quit_driver() 
+            if "session not created" in str(e).lower() or "connection refused" in str(e).lower():
+                ASCIIColors.warning("Tip: This often indicates a Chrome version mismatch or a zombie Chrome process. Try killing old chrome processes.")
+            
+            if "initialized" not in locals(): 
                  raise DriverInitializationError(error_msg) from e
             else:
                  return None, None, error_msg
         except Exception as e:
             error_msg = f"{driver_type}: Unexpected error: {e}"
             ASCIIColors.error(error_msg)
-            self._quit_driver() # Clean up
-            raise StrategyError(error_msg) from e # Raise strategy error
+            self._quit_driver() 
+            raise StrategyError(error_msg) from e 
 
     # --- Core Fetching Orchestration ---
 
     def _fetch_content(self, strategy_list: list[str]) -> bool:
         """
         Orchestrates fetching content using the specified strategies.
-        Updates self.html_content and self.current_soup on success.
-        Returns True on success, False on failure after trying all strategies.
         """
         if not self.current_url:
             self.last_error = "Cannot fetch: URL not set."
@@ -471,16 +535,20 @@ class ScrapeMaster:
 
         self.current_soup = None
         self.html_content = ""
-        self.last_error = "No strategies succeeded." # Default error
+        self.last_error = "No strategies succeeded." 
         self.last_strategy_used = None
 
         for strategy_name in strategy_list:
             html = None
             soup = None
-            error_msg = None # Specific outcome message for this strategy attempt
+            error_msg = None 
 
             try:
-                if strategy_name == "requests":
+                if strategy_name == "wikipedia":
+                    html, soup, error_msg = self._try_wikipedia()
+                elif strategy_name == "docling":
+                    html, soup, error_msg = self._try_docling()
+                elif strategy_name == "requests":
                     html, soup, error_msg = self._try_requests()
                 elif strategy_name == "selenium":
                     html, soup, error_msg = self._try_selenium(use_undetected=False)
@@ -490,9 +558,8 @@ class ScrapeMaster:
                     else:
                         error_msg = "skipped (library unavailable)"
                         ASCIIColors.warning("-- Strategy: Skipping undetected-chromedriver (unavailable) --")
-                        continue # Skip to next strategy
+                        continue 
                 else:
-                    # Should not happen if _resolve_strategy worked
                     ASCIIColors.warning(f"Unknown strategy '{strategy_name}' encountered.")
                     continue
 
@@ -504,67 +571,45 @@ class ScrapeMaster:
                     self.last_error = None
                     self.last_strategy_used = strategy_name
                     ASCIIColors.success(f"--- Fetch successful using strategy: {strategy_name} ---")
-                    self._quit_driver() # Quit driver after successful fetch
+                    self._quit_driver() 
                     return True
                 elif error_msg:
-                    # Strategy attempted but failed or was blocked
                     self.last_error = f"{strategy_name.capitalize()}: {error_msg}"
                     ASCIIColors.warning(f"Strategy '{strategy_name}' failed: {error_msg}")
-                    if "Blocker page detected" in error_msg or "403 Forbidden" in error_msg:
-                        # Blocker detected, continue to next strategy
-                        continue
-                    else:
-                        # Other potentially definitive error from this strategy
-                        # Decide whether to stop or continue (for now, continue)
-                         pass
+                    continue 
                 else:
-                     # Should not happen - indicates logic error in strategy function
                      self.last_error = f"{strategy_name.capitalize()}: Strategy returned unexpected empty result."
                      ASCIIColors.error(self.last_error)
 
 
             except (DriverInitializationError, PageFetchError, StrategyError, ScrapeMasterError) as e:
-                # Catch definitive errors raised by strategies
                 self.last_error = f"{strategy_name.capitalize()} Error: {e}"
                 ASCIIColors.critical(f"--- Definitive error during '{strategy_name}' strategy: {e} ---")
-                # Stop processing further strategies if a critical error occurred (like driver init failure)
                 if isinstance(e, DriverInitializationError):
-                    return False
-                # For other errors, we might choose to continue or stop. Let's continue for now.
+                    # Should we abort completely if driver init fails? 
+                    # Usually better to try other strategies (like docling or requests if they come later)
+                    pass 
             except Exception as e:
-                # Catch any other unexpected exceptions
                 self.last_error = f"{strategy_name.capitalize()} Unexpected Error: {e}"
                 ASCIIColors.critical(f"--- Unexpected critical error during '{strategy_name}' strategy: {e} ---")
                 import traceback
                 ASCIIColors.error(traceback.format_exc())
-                return False # Stop on truly unexpected errors
+                # Continue to next strategy
 
-        # If loop finishes without success
         ASCIIColors.error(f"--- Fetch failed after trying all strategies. Last status: {self.last_error} ---")
-        self._quit_driver() # Ensure driver is quit even if all strategies failed
+        self._quit_driver() 
         return False
 
     # --- Public Scraping Methods ---
 
     def scrape_text(self, selectors: list[str] | None = None, fetch_strategy: list[str] | str | None = None) -> list[str]:
-        """
-        Scrapes text fragments from the page using specified selectors after fetching content.
-
-        Args:
-            selectors (list[str] | None): List of CSS selectors for text elements.
-                                          Defaults to DEFAULT_TEXT_SELECTORS.
-            fetch_strategy (list[str] | str | None): Override the instance's strategy for this call.
-                                                    Defaults to None (use instance strategy).
-
-        Returns:
-            list[str]: A list of cleaned text fragments found. Returns empty list on fetch failure.
-        """
+        """Scrapes text fragments from the page using specified selectors after fetching content."""
         strategy_to_use = self._resolve_strategy(fetch_strategy) if fetch_strategy else self.strategy
-        if not self.current_soup: # Fetch only if needed
+        if not self.current_soup: 
              if not self._fetch_content(strategy_to_use):
-                 return [] # Fetch failed
+                 return [] 
 
-        if not self.current_soup: # Check again after fetch attempt
+        if not self.current_soup: 
              self.last_error = "Cannot scrape text: No valid page content fetched."
              ASCIIColors.error(self.last_error)
              return []
@@ -583,18 +628,7 @@ class ScrapeMaster:
         return texts
 
     def scrape_images(self, selectors: list[str] | None = None, fetch_strategy: list[str] | str | None = None) -> list[str]:
-        """
-        Scrapes image URLs from the page using specified selectors after fetching content.
-
-        Args:
-            selectors (list[str] | None): List of CSS selectors for image elements.
-                                          Defaults to DEFAULT_IMAGE_SELECTORS.
-            fetch_strategy (list[str] | str | None): Override the instance's strategy for this call.
-                                                    Defaults to None (use instance strategy).
-
-        Returns:
-            list[str]: A list of absolute image URLs found. Returns empty list on fetch failure.
-        """
+        """Scrapes image URLs from the page using specified selectors after fetching content."""
         strategy_to_use = self._resolve_strategy(fetch_strategy) if fetch_strategy else self.strategy
         if not self.current_soup:
              if not self._fetch_content(strategy_to_use):
@@ -615,7 +649,7 @@ class ScrapeMaster:
                         src = img['src']
                         if isinstance(src, str) and src.strip():
                              abs_url = urljoin(self.current_url, src)
-                             if is_valid_url(abs_url): # Basic check if it looks like a valid image URL
+                             if is_valid_url(abs_url): 
                                  image_urls.append(abs_url)
             ASCIIColors.debug(f"Scraped {len(image_urls)} image URLs using selectors: {selectors}")
         except Exception as e:
@@ -631,23 +665,8 @@ class ScrapeMaster:
                         crawl_delay: float = 0.5,
                         allowed_domains: list[str] | None = None
                         ) -> str | None:
-        """
-        Fetches content, identifies the main content area, cleans it, and converts to Markdown.
-        Can optionally crawl links to generate a consolidated Markdown document.
-
-        Args:
-            content_selectors (list[str] | None): Selectors to find the main content.
-            noisy_selectors (list[str] | None): Selectors to remove noise.
-            fetch_strategy (list[str] | str | None): Strategy to use for fetching.
-            max_depth (int): Maximum depth to crawl (0 = single page). Defaults to 0.
-            crawl_delay (float): Delay between requests when crawling.
-            allowed_domains (list[str] | None): Restrict crawling to these domains.
-
-        Returns:
-            str | None: The Markdown content (single page or consolidated), or None on failure.
-        """
+        """Fetches content, cleans it, and converts to Markdown."""
         if max_depth > 0:
-            # Delegate to scrape_all for crawling logic
             results = self.scrape_all(
                 max_depth=max_depth,
                 crawl_delay=crawl_delay,
@@ -676,63 +695,33 @@ class ScrapeMaster:
 
         # Call the enhanced parsing function
         markdown_text, error = _parse_and_markdownify(
-            self.html_content, # Pass the fetched html
+            self.html_content, 
             content_selectors=content_selectors,
             noisy_selectors=noisy_selectors
-            # Note: _parse_and_markdownify now uses the soup generated from html_content
         )
 
         if error:
             self.last_error = f"Markdown Conversion Failed: {error}"
-            # Don't raise here, return None as per function signature
             return None
 
         return markdown_text
 
 
     def scrape_all(self,
-                   max_depth: int = 0, # NEW: Maximum crawl depth
-                   crawl_delay: float = 0.5, # NEW: Delay between pages when crawling
-                   allowed_domains: list[str] | None = None, # NEW: Domains to restrict crawl
+                   max_depth: int = 0, 
+                   crawl_delay: float = 0.5, 
+                   allowed_domains: list[str] | None = None, 
                    text_selectors: list[str] | None = None,
                    image_selectors: list[str] | None = None,
-                   content_selectors: list[str] | None = None, # For markdown
-                   noisy_selectors: list[str] | None = None,   # For markdown
-                   convert_to_markdown: bool = False,         # Control markdown generation
+                   content_selectors: list[str] | None = None, 
+                   noisy_selectors: list[str] | None = None,   
+                   convert_to_markdown: bool = False,         
                    download_images_output_dir: str | None = None,
                    fetch_strategy: list[str] | str | None = None
                    ) -> dict | None:
-        """
-        Performs a comprehensive scrape, potentially crawling linked pages up to max_depth.
-        Fetches content, extracts text fragments, extracts image URLs,
-        optionally converts main content to Markdown, and optionally downloads images.
-        When crawling (max_depth > 0), results are aggregated.
-
-        Args:
-            max_depth (int): Max depth to follow links (0 = only initial URL). Defaults to 0.
-            crawl_delay (float): Seconds to wait between page fetches when crawling. Defaults to 0.5.
-            allowed_domains (list[str] | None): Restrict crawling to these domains. If None,
-                                               stays on the initial URL's domain. Defaults to None.
-            text_selectors (list[str] | None): Selectors for text fragments. Defaults to library defaults.
-            image_selectors (list[str] | None): Selectors for image elements. Defaults to library defaults.
-            content_selectors (list[str] | None): Selectors for main content (for Markdown). Defaults to library defaults.
-            noisy_selectors (list[str] | None): Selectors for noise removal (for Markdown). Defaults to library defaults.
-            convert_to_markdown (bool): If True, attempt to convert main content area to Markdown. Defaults to False.
-            download_images_output_dir (str | None): Directory to save downloaded images. If None, images are not downloaded.
-                                                    Note: When crawling, images from all pages are saved here.
-            fetch_strategy (list[str] | str | None): Override the instance's strategy for this call. Defaults to None.
-
-        Returns:
-            dict | None: A dictionary containing aggregated results:
-                         'markdown': Combined Markdown string (or None).
-                         'texts': List of all text fragments from all pages.
-                         'image_urls': List of all unique image URLs from all pages.
-                         'visited_urls': List of successfully scraped URLs.
-                         'failed_urls': List of URLs that failed to scrape during crawl.
-                         Returns None if the initial fetch operation fails.
-        """
+        """Performs a comprehensive scrape, potentially crawling linked pages up to max_depth."""
         strategy_to_use = self._resolve_strategy(fetch_strategy) if fetch_strategy else self.strategy
-        start_url = self.current_url or self.initial_url # Use current if set, else initial
+        start_url = self.current_url or self.initial_url 
 
         if not start_url:
             self.last_error = "Cannot scrape: No initial URL provided."
@@ -744,21 +733,20 @@ class ScrapeMaster:
             ASCIIColors.info(f"Performing single-page scrape for: {start_url}")
             if not self._fetch_content(strategy_to_use):
                  ASCIIColors.error("scrape_all failed: Could not fetch content for the single page.")
-                 return None # Fetch failed
+                 return None 
 
             results = {
                 'markdown': None, 'texts': [], 'image_urls': [],
                 'visited_urls': [start_url], 'failed_urls': []
             }
             try:
-                results['texts'] = self.scrape_text(selectors=text_selectors, fetch_strategy=None) # Use already fetched
+                results['texts'] = self.scrape_text(selectors=text_selectors, fetch_strategy=None) 
             except ParsingError as e: ASCIIColors.warning(f"Error scraping text: {e}")
             try:
-                results['image_urls'] = self.scrape_images(selectors=image_selectors, fetch_strategy=None) # Use already fetched
+                results['image_urls'] = self.scrape_images(selectors=image_selectors, fetch_strategy=None) 
             except ParsingError as e: ASCIIColors.warning(f"Error scraping images: {e}")
             if convert_to_markdown:
                 try:
-                    # Use kw args to avoid confusion with new parameters in scrape_markdown
                     results['markdown'] = self.scrape_markdown(
                         content_selectors=content_selectors,
                         noisy_selectors=noisy_selectors,
@@ -773,27 +761,26 @@ class ScrapeMaster:
         else:
             # --- Multi-Page Crawling Logic ---
             output_path = Path(download_images_output_dir) if download_images_output_dir else None
-            if output_path: # Create output dir if specified for images
+            if output_path: 
                  output_path.mkdir(parents=True, exist_ok=True)
 
             visited = set()
-            queue = [(start_url, 0)] # Queue of (url, depth)
+            queue = [(start_url, 0)] 
             aggregated_markdown = []
             aggregated_texts = []
-            aggregated_image_urls = set() # Use set for uniqueness
+            aggregated_image_urls = set() 
             successfully_visited = []
             failed_urls = []
 
-            # Determine allowed domains
             if allowed_domains is None:
                 try:
                     initial_domain = urlparse(start_url).netloc
                     allowed_domains = [initial_domain] if initial_domain else []
                 except Exception:
-                     allowed_domains = [] # Cannot determine domain, don't crawl widely
+                     allowed_domains = [] 
             if not allowed_domains:
                  ASCIIColors.warning("Could not determine allowed domain. Restricting crawl to max_depth=0.")
-                 return self.scrape_all(max_depth=0, # Call single-page logic
+                 return self.scrape_all(max_depth=0, 
                                         crawl_delay=crawl_delay, allowed_domains=allowed_domains,
                                         text_selectors=text_selectors, image_selectors=image_selectors,
                                         content_selectors=content_selectors, noisy_selectors=noisy_selectors,
@@ -811,7 +798,6 @@ class ScrapeMaster:
                 if current_url in visited or current_depth > max_depth:
                     continue
 
-                # Check domain permission
                 try:
                     current_domain = urlparse(current_url).netloc
                     if current_domain not in allowed_domains:
@@ -826,38 +812,33 @@ class ScrapeMaster:
                 page_count += 1
                 ASCIIColors.info(f"Crawling [Depth:{current_depth}, Page:{page_count}]: {current_url}")
 
-                # --- Scrape individual page ---
-                self.set_url(current_url) # Update scraper's current URL
+                self.set_url(current_url) 
                 page_markdown = None
                 page_texts = []
                 page_image_urls = []
-                fetch_success = self._fetch_content(strategy_to_use) # Fetch the content for this page
+                fetch_success = self._fetch_content(strategy_to_use) 
 
                 if fetch_success and self.current_soup:
                     successfully_visited.append(current_url)
-                    # Extract content from this page
                     try:
                          page_texts = self.scrape_text(selectors=text_selectors, fetch_strategy=None)
                          aggregated_texts.extend(page_texts)
                     except ParsingError as e: ASCIIColors.warning(f"Error scraping text on {current_url}: {e}")
                     try:
                          page_image_urls = self.scrape_images(selectors=image_selectors, fetch_strategy=None)
-                         aggregated_image_urls.update(page_image_urls) # Add unique urls
+                         aggregated_image_urls.update(page_image_urls) 
                     except ParsingError as e: ASCIIColors.warning(f"Error scraping images on {current_url}: {e}")
                     if convert_to_markdown:
                         try:
-                            # Use kw args explicitly
                             page_markdown = self.scrape_markdown(
                                 content_selectors=content_selectors,
                                 noisy_selectors=noisy_selectors,
                                 fetch_strategy=None
                             )
                             if page_markdown:
-                                 # Add URL separator/header for combined markdown
                                  aggregated_markdown.append(f"\n\n## Scraped Content from: {current_url}\n\n---\n\n{page_markdown}")
                         except ParsingError as e: ASCIIColors.warning(f"Error converting to markdown on {current_url}: {e}")
 
-                    # Find and queue new links if depth allows
                     if current_depth < max_depth:
                         links = self.current_soup.select('a[href]')
                         for link in links:
@@ -865,36 +846,31 @@ class ScrapeMaster:
                             if isinstance(href, str) and href.strip():
                                 try:
                                     next_url = urljoin(current_url, href.strip())
-                                    # Basic check to avoid mailto, javascript, etc. and fragments
                                     parsed_next = urlparse(next_url)
                                     if parsed_next.scheme in ['http', 'https'] and parsed_next.fragment == '':
                                         if next_url not in visited:
                                             queue.append((next_url, current_depth + 1))
                                 except Exception:
-                                     pass # Ignore invalid URLs formed by urljoin
+                                     pass 
                 else:
-                     # Fetch failed for this page
                      ASCIIColors.error(f"Failed to scrape page {current_url}. Error: {self.get_last_error()}")
                      failed_urls.append(current_url)
 
-                # Respect crawl delay
-                if queue: # Only delay if there are more pages to crawl
+                if queue: 
                     ASCIIColors.debug(f"Waiting {crawl_delay}s before next fetch...")
                     time.sleep(crawl_delay)
-            # --- End Crawl Loop ---
 
-            self._quit_driver() # Ensure driver is closed after crawl
+            self._quit_driver() 
 
             ASCIIColors.success(f"Website crawl finished. Visited {len(visited)} pages ({len(successfully_visited)} scraped successfully).")
 
-            # Download all collected images if requested
             if download_images_output_dir and aggregated_image_urls:
                  self.download_images(list(aggregated_image_urls), download_images_output_dir)
 
             return {
                 'markdown': "\n".join(aggregated_markdown).strip() if convert_to_markdown else None,
                 'texts': aggregated_texts,
-                'image_urls': sorted(list(aggregated_image_urls)), # Return sorted list
+                'image_urls': sorted(list(aggregated_image_urls)), 
                 'visited_urls': successfully_visited,
                 'failed_urls': failed_urls
             }
@@ -903,12 +879,9 @@ class ScrapeMaster:
 
     def _extract_youtube_id(self, url_or_id: str) -> str:
         """Helper to extract YouTube video ID from a URL or return the ID if it looks like one."""
-        # Simple check for direct ID (11 chars, no spaces/slashes)
         if len(url_or_id) == 11 and ' ' not in url_or_id and '/' not in url_or_id:
              return url_or_id
         
-        # Regex for common YouTube URL formats
-        # Matches: v=ID, embed/ID, youtu.be/ID, v/ID
         patterns = [
             r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
             r'(?:embed\/)([0-9A-Za-z_-]{11})',
@@ -923,16 +896,7 @@ class ScrapeMaster:
         raise ValueError(f"Could not extract YouTube video ID from: {url_or_id}")
 
     def get_youtube_languages(self, url_or_id: str) -> list[dict] | None:
-        """
-        Retrieves a list of available transcript languages for a YouTube video.
-        
-        Args:
-            url_or_id (str): The YouTube video URL or ID.
-            
-        Returns:
-            list[dict] | None: A list of dictionaries containing language code, name, and type,
-                               or None if retrieval fails/API unavailable.
-        """
+        """Retrieves a list of available transcript languages for a YouTube video."""
         if not YOUTUBE_AVAILABLE:
             ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
             return None
@@ -944,7 +908,6 @@ class ScrapeMaster:
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             languages = []
             
-            # Helper to format transcript info
             def get_info(t):
                 return {
                     "code": t.language_code,
@@ -953,11 +916,9 @@ class ScrapeMaster:
                     "is_translatable": t.is_translatable
                 }
 
-            # Collect manually created transcripts
             for t in transcript_list._manually_created_transcripts.values():
                 languages.append(get_info(t))
                 
-            # Collect generated transcripts
             for t in transcript_list._generated_transcripts.values():
                 languages.append(get_info(t))
                 
@@ -969,17 +930,7 @@ class ScrapeMaster:
             return None
 
     def scrape_youtube_transcript(self, url_or_id: str, language_code: str | None = None) -> str | None:
-        """
-        Scrapes the transcript text from a YouTube video.
-        
-        Args:
-            url_or_id (str): The YouTube video URL or ID.
-            language_code (str | None): Specific language code (e.g., 'en', 'es').
-                                      If None, attempts to find the default (preferring manual over generated).
-        
-        Returns:
-            str | None: The transcript text combined into a single string, or None on failure.
-        """
+        """Scrapes the transcript text from a YouTube video."""
         if not YOUTUBE_AVAILABLE:
             ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
             return None
@@ -989,25 +940,20 @@ class ScrapeMaster:
             ASCIIColors.info(f"Fetching transcript for video: {video_id}")
 
             if language_code:
-                # User specified a language
                 ASCIIColors.info(f"Attempting to fetch transcript for language: {language_code}")
                 transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language_code])
             else:
-                # Auto-detect: Prefer manual -> then generated -> then fallback
                 ASCIIColors.info("No language specified. Searching for available transcripts (Manual > Generated)...")
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
                 
                 target_transcript = None
                 
-                # Try to find a manually created transcript first
                 try:
-                    # Iterate manually created dict values
                     for t in transcript_list._manually_created_transcripts.values():
                         target_transcript = t
-                        break # Take the first manual one
+                        break 
                 except Exception: pass
                 
-                # If no manual, try generated
                 if not target_transcript:
                     try:
                         for t in transcript_list._generated_transcripts.values():
@@ -1020,13 +966,10 @@ class ScrapeMaster:
                                      f"[{'Generated' if target_transcript.is_generated else 'Manual'}]")
                     transcript_data = target_transcript.fetch()
                 else:
-                    # Fallback to API default behavior (usually English or video default)
                     ASCIIColors.warning("Could not explicitly select a transcript. Falling back to API default.")
                     transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
 
-            # Join the text parts
             full_text = " ".join([entry['text'] for entry in transcript_data])
-            # Basic cleanup of HTML entities/whitespace often found in transcripts
             full_text = re.sub(r'\s+', ' ', full_text).strip()
             
             ASCIIColors.success("YouTube transcript fetched successfully.")
@@ -1086,20 +1029,18 @@ class ScrapeMaster:
     def load_selenium_cookies(self, filename: str = 'selenium_cookies.json'):
         """Loads Selenium cookies from a JSON file. Requires driver to be active."""
         if not self.driver:
-            # Need to decide: should this initialize the driver? For now, no.
             ASCIIColors.warning("Cannot load Selenium cookies: Driver not active. Fetch page first.")
             return
         try:
             with open(filename, 'r') as f:
                 cookies = json.load(f)
             for cookie in cookies:
-                # Handle potential cookie compatibility issues if necessary
                 try:
                     self.driver.add_cookie(cookie)
                 except Exception as e_add:
                     ASCIIColors.warning(f"Could not add cookie {cookie.get('name', 'N/A')}: {e_add}")
             ASCIIColors.info(f"Selenium cookies loaded from {filename}")
-            self.driver.refresh() # Refresh page to apply cookies
+            self.driver.refresh() 
         except FileNotFoundError:
             ASCIIColors.warning(f"Selenium cookie file not found: {filename}")
         except Exception as e:
@@ -1107,13 +1048,7 @@ class ScrapeMaster:
 
 
     def download_images(self, image_urls: list[str], output_dir: str):
-        """
-        Downloads images from the provided URLs to the specified directory.
-
-        Args:
-            image_urls (list[str]): A list of absolute image URLs to download.
-            output_dir (str): The directory to save downloaded images. Images will be saved in `output_dir/images`.
-        """
+        """Downloads images from the provided URLs to the specified directory."""
         if not image_urls:
             return
 
@@ -1124,16 +1059,13 @@ class ScrapeMaster:
 
         for i, url in enumerate(image_urls):
             try:
-                # Generate filename from URL path, sanitize it
                 parsed_path = Path(urlparse(url).path)
                 filename_base = parsed_path.stem
-                filename_ext = parsed_path.suffix or '.jpg' # Default extension if none
-                # Basic sanitization
+                filename_ext = parsed_path.suffix or '.jpg' 
                 safe_filename_base = re.sub(r'[^\w\-]+', '_', filename_base)
-                filename = f"{safe_filename_base[:50]}_{i}{filename_ext}" # Add index for uniqueness, limit length
+                filename = f"{safe_filename_base[:50]}_{i}{filename_ext}" 
                 filepath = images_dir / filename
 
-                # Use the existing session for downloading
                 response = self.session.get(url, stream=True, timeout=20)
                 response.raise_for_status()
 
@@ -1153,15 +1085,10 @@ class ScrapeMaster:
         ASCIIColors.info(f"Finished downloading. {downloaded_count}/{len(image_urls)} images saved.")
 
 
-    # --- Kept original methods for potential compatibility/specific use ---
-    # Note: These now have potential redundancy with scrape_all/scrape_text/etc.
-    # Consider deprecating or clearly documenting their limited scope (requests only).
+    # --- Deprecated Methods ---
 
     def fetch_page(self):
-        """
-        DEPRECATED (use scrape_... methods with strategy=['requests']).
-        Fetches the page using only the requests library.
-        """
+        """DEPRECATED (use scrape_... methods with strategy=['requests'])."""
         ASCIIColors.warning("fetch_page() is deprecated. Use scrape_... methods with fetch_strategy=['requests'].")
         try:
             html, soup, error = self._try_requests()
@@ -1179,10 +1106,7 @@ class ScrapeMaster:
 
 
     def fetch_page_with_js(self):
-        """
-        DEPRECATED (use scrape_... methods with strategy=['selenium']).
-        Fetches the page using only standard Selenium.
-        """
+        """DEPRECATED (use scrape_... methods with strategy=['selenium'])."""
         ASCIIColors.warning("fetch_page_with_js() is deprecated. Use scrape_... methods with fetch_strategy=['selenium'].")
         try:
             html, soup, error = self._try_selenium(use_undetected=False)
@@ -1198,7 +1122,7 @@ class ScrapeMaster:
              self.last_error = f"Error in fetch_page_with_js: {e}"
              raise StrategyError(self.last_error) from e
 
-    # --- Login methods remain similar, maybe add strategy hints ---
+    # --- Login methods remain similar ---
 
     def login(self, login_url, username, password, username_field='username', password_field='password'):
         """Logs into a website using the requests session. Best for simple form logins."""
@@ -1208,7 +1132,6 @@ class ScrapeMaster:
             response = self.session.post(login_url, data=data)
             response.raise_for_status()
             ASCIIColors.success("Requests-based login likely successful (check cookies/subsequent requests).")
-            # self.save_cookies() # Optionally save cookies after login
         except requests.exceptions.RequestException as e:
             raise PageFetchError(f"Requests login failed: {e}") from e
 
@@ -1216,7 +1139,6 @@ class ScrapeMaster:
         """Logs into a website using Selenium. Better for JS-heavy login forms."""
         ASCIIColors.info(f"Attempting Selenium-based login to {login_url}")
         if not self.driver:
-            # Initialize standard driver if not already active
             ASCIIColors.warning("Initializing standard Selenium driver for login.")
             options = self._setup_selenium_options(for_undetected=False)
             driver_path = self._get_driver_path()
@@ -1226,7 +1148,7 @@ class ScrapeMaster:
 
         try:
             self.driver.get(login_url)
-            wait = WebDriverWait(self.driver, 15) # Increased wait time
+            wait = WebDriverWait(self.driver, 15) 
 
             user_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, username_selector)))
             pass_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, password_selector)))
@@ -1237,25 +1159,13 @@ class ScrapeMaster:
             submit_button.click()
 
             ASCIIColors.info(f"Login submitted. Waiting {wait_after_login}s for redirection/page load...")
-            # Instead of url_changes, wait for a known element on the logged-in page or just pause
             time.sleep(wait_after_login)
-            # Example: Wait for a logout button or user profile element
-            # try:
-            #     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#logout-button')))
-            #     ASCIIColors.success("Selenium login likely successful (found logout button).")
-            # except TimeoutException:
-            #     ASCIIColors.warning("Selenium login submitted, but confirmation element not found.")
-
-            # self.save_selenium_cookies() # Optionally save cookies
 
         except (WebDriverException, TimeoutException) as e:
             raise StrategyError(f"Selenium login failed: {e}") from e
         except Exception as e:
              raise ScrapeMasterError(f"Unexpected error during Selenium login: {e}") from e
 
-
-    # --- Recursive Scraping ---
-    # Updated to use the new fetch mechanism
 
     def scrape_website(self,
                        start_url: str | None = None,
@@ -1267,21 +1177,7 @@ class ScrapeMaster:
                        fetch_strategy: list[str] | str | None = None,
                        convert_to_markdown: bool = True,
                        save_images: bool = False):
-        """
-        Recursively scrapes a website starting from a URL, following links up to a max depth.
-
-        Args:
-            start_url (str | None): The URL to start scraping from. Defaults to instance URL.
-            max_depth (int): Maximum depth of links to follow (0 = start_url only). Defaults to 1.
-            output_dir (str): Directory to save scraped content.
-            file_prefix (str): Prefix for saved files (e.g., 'page_').
-            crawl_delay (float): Seconds to wait between page fetches. Defaults to 0.5.
-            allowed_domains (list[str] | None): Optional list of domains to restrict crawling to.
-                                               If None, only stays on the start_url's domain.
-            fetch_strategy (list[str] | str | None): Strategy for fetching pages. Defaults to instance default.
-            convert_to_markdown (bool): Save main content as Markdown. Defaults to True.
-            save_images (bool): Download images for each page. Defaults to False.
-        """
+        """Recursively scrapes a website starting from a URL, following links up to a max depth."""
         start_url = start_url or self.initial_url
         if not start_url or not is_valid_url(start_url):
             raise ValueError("Invalid start URL for website scraping.")
@@ -1289,7 +1185,7 @@ class ScrapeMaster:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         visited = set()
-        queue = [(start_url, 0)] # Queue of (url, depth)
+        queue = [(start_url, 0)] 
 
         if allowed_domains is None:
             allowed_domains = [urlparse(start_url).netloc]
@@ -1305,7 +1201,6 @@ class ScrapeMaster:
             if current_url in visited or current_depth > max_depth:
                 continue
 
-            # Check domain permission
             current_domain = urlparse(current_url).netloc
             if current_domain not in allowed_domains:
                 ASCIIColors.debug(f"Skipping external domain: {current_url}")
@@ -1315,7 +1210,7 @@ class ScrapeMaster:
             page_count += 1
             ASCIIColors.info(f"Crawling [Depth:{current_depth}, Page:{page_count}]: {current_url}")
 
-            self.set_url(current_url) # Update scraper's current URL
+            self.set_url(current_url) 
 
             results = self.scrape_all(
                 fetch_strategy=strategy_to_use,
@@ -1324,9 +1219,8 @@ class ScrapeMaster:
             )
 
             if results:
-                # Save content
                 page_filename_base = f"{file_prefix}{page_count}_{current_domain}_{Path(urlparse(current_url).path).name or 'index'}"
-                page_filename_base = re.sub(r'[^\w\-]+', '_', page_filename_base)[:100] # Sanitize
+                page_filename_base = re.sub(r'[^\w\-]+', '_', page_filename_base)[:100] 
 
                 if convert_to_markdown and results.get('markdown'):
                     filepath = output_path / f"{page_filename_base}.md"
@@ -1337,7 +1231,7 @@ class ScrapeMaster:
                         ASCIIColors.debug(f"Saved Markdown to {filepath}")
                     except IOError as e:
                         ASCIIColors.error(f"Failed to save Markdown for {current_url}: {e}")
-                elif results.get('texts'): # Fallback to saving raw texts if no markdown
+                elif results.get('texts'): 
                     filepath = output_path / f"{page_filename_base}.txt"
                     try:
                          with open(filepath, 'w', encoding='utf-8') as f:
@@ -1347,24 +1241,21 @@ class ScrapeMaster:
                     except IOError as e:
                         ASCIIColors.error(f"Failed to save text for {current_url}: {e}")
 
-                # Find and queue new links if depth allows
                 if current_depth < max_depth and self.current_soup:
                     links = self.current_soup.select('a[href]')
                     for link in links:
-                        href = link['href']
+                        href = link.get('href')
                         if isinstance(href, str) and href.strip():
                             next_url = urljoin(current_url, href)
-                            # Basic check to avoid mailto, javascript, etc. and fragments
                             if is_valid_url(next_url) and urlparse(next_url).fragment == '':
                                 if next_url not in visited:
                                     queue.append((next_url, current_depth + 1))
             else:
                  ASCIIColors.error(f"Failed to scrape page {current_url}. Error: {self.get_last_error()}")
 
-            # Respect crawl delay
-            if queue: # Only delay if there are more pages to crawl
+            if queue: 
                 ASCIIColors.debug(f"Waiting {crawl_delay}s before next fetch...")
                 time.sleep(crawl_delay)
 
         ASCIIColors.success(f"Website crawl finished. Visited {len(visited)} pages.")
-        self._quit_driver() # Ensure driver is closed after crawl
+        self._quit_driver() 
