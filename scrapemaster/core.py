@@ -20,6 +20,7 @@ try:
         "webdriver-manager",
         "undetected-chromedriver",
         "markdownify",
+        "markdown",              # Added for MD -> HTML conversion (Docling support)
         "ascii_colors",
         "youtube_transcript_api",
         "wikipedia",
@@ -331,27 +332,15 @@ class ScrapeMaster:
             # Docling handles fetching internally
             result = converter.convert(self.current_url)
             
-            # Docling works best for Markdown export, but we need HTML/Soup for the generic pipeline.
-            # We can export to HTML if supported, or Markdown.
-            # Docling's `export_to_html` is not always available in all versions, let's check.
-            # If unavailable, we might need to rely on markdown content primarily.
-            
-            # However, to fit into _fetch_content structure, we need HTML.
-            # Docling stores internal structure. 
-            # Strategy: Convert Docling structure to HTML-like string or rely on `scrape_markdown` bypassing soup.
-            # For now, we will try to get HTML. If not, we generate a simple HTML wrapper around the markdown 
-            # so that `scrape_text` and `soup` operations don't crash.
-            
             markdown_content = result.document.export_to_markdown()
             
             # Wrap in HTML for compatibility
-            html_wrapper = f"<html><body><main>{md(markdown_content)}</main></body></html>" # Reverse MD to HTML (not ideal)
-            # Actually, `markdown` lib can convert MD to HTML
             try:
                 import markdown
                 html_content = markdown.markdown(markdown_content)
                 html_content = f"<html><body>{html_content}</body></html>"
             except ImportError:
+                # Fallback if markdown library is not installed
                 html_content = f"<html><body><pre>{markdown_content}</pre></body></html>"
 
             soup = BeautifulSoup(html_content, 'lxml')
@@ -529,6 +518,30 @@ class ScrapeMaster:
             self.last_error = "Cannot fetch: URL not set."
             ASCIIColors.error(self.last_error)
             return False
+
+        # ----------------------------------------------------------------
+        # 1️⃣  Auto-Detect File Types (PDF, DOCX, etc.) & Enforce Docling
+        # ----------------------------------------------------------------
+        # Check if the URL points to a document type that Docling handles best.
+        # This overrides the passed strategy list to ensure the right tool is used.
+        doc_extensions = {'.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.asciidoc'}
+        try:
+            parsed_url = urlparse(self.current_url)
+            path_ext = Path(parsed_url.path).suffix.lower()
+            
+            # Check 1: Extension match
+            is_doc = path_ext in doc_extensions
+            
+            # Check 2: ArXiv PDF pattern (often missing extension in URL)
+            # Example: https://arxiv.org/pdf/2109.09572
+            if not is_doc and "arxiv.org" in parsed_url.netloc and "/pdf/" in parsed_url.path:
+                is_doc = True
+            
+            if is_doc:
+                ASCIIColors.info(f"Document file detected (ext: '{path_ext}'): Enforcing 'docling' strategy.")
+                strategy_list = ['docling']
+        except Exception:
+            pass # Fallback to standard flow if parsing fails
 
         ASCIIColors.info(f"--- Starting fetch for: {self.current_url} ---")
         ASCIIColors.info(f"Using strategies: {strategy_list}")
@@ -904,8 +917,8 @@ class ScrapeMaster:
         try:
             video_id = self._extract_youtube_id(url_or_id)
             ASCIIColors.info(f"Fetching available transcript languages for video: {video_id}")
-            
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            vtapi = YouTubeTranscriptApi()
+            transcript_list = vtapi.list(video_id)
             languages = []
             
             def get_info(t):
@@ -934,42 +947,21 @@ class ScrapeMaster:
         if not YOUTUBE_AVAILABLE:
             ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
             return None
-
+        vtapi = YouTubeTranscriptApi()
         try:
             video_id = self._extract_youtube_id(url_or_id)
             ASCIIColors.info(f"Fetching transcript for video: {video_id}")
 
             if language_code:
                 ASCIIColors.info(f"Attempting to fetch transcript for language: {language_code}")
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language_code])
+                
+
+                transcript_data = vtapi.fetch(video_id, languages=[language_code])
             else:
                 ASCIIColors.info("No language specified. Searching for available transcripts (Manual > Generated)...")
-                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                transcript_data =  vtapi.fetch(video_id)
                 
-                target_transcript = None
-                
-                try:
-                    for t in transcript_list._manually_created_transcripts.values():
-                        target_transcript = t
-                        break 
-                except Exception: pass
-                
-                if not target_transcript:
-                    try:
-                        for t in transcript_list._generated_transcripts.values():
-                            target_transcript = t
-                            break
-                    except Exception: pass
-                
-                if target_transcript:
-                    ASCIIColors.info(f"Selected transcript: {target_transcript.language} ({target_transcript.language_code}) "
-                                     f"[{'Generated' if target_transcript.is_generated else 'Manual'}]")
-                    transcript_data = target_transcript.fetch()
-                else:
-                    ASCIIColors.warning("Could not explicitly select a transcript. Falling back to API default.")
-                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
-
-            full_text = " ".join([entry['text'] for entry in transcript_data])
+            full_text = " ".join([entry.text for entry in transcript_data.snippets])
             full_text = re.sub(r'\s+', ' ', full_text).strip()
             
             ASCIIColors.success("YouTube transcript fetched successfully.")
@@ -1081,8 +1073,6 @@ class ScrapeMaster:
                 ASCIIColors.warning(f"Failed to save image {url} to {filepath}: {ex}")
             except Exception as ex:
                 ASCIIColors.warning(f"Unexpected error downloading image {url}: {ex}")
-
-        ASCIIColors.info(f"Finished downloading. {downloaded_count}/{len(image_urls)} images saved.")
 
 
     # --- Deprecated Methods ---
