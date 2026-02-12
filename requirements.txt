@@ -1,2 +1,3 @@
-docling
+pipmaster
+ascii_colors
 wikipedia
