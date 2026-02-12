@@ -39,7 +39,6 @@ dependencies = [
     "ascii_colors>=0.10.0",
     "youtube-transcript-api>=0.6.0",
     "wikipedia>=1.4.0", # Added specific library
-    "docling>=1.0.0",   # Added docling
 ]
 
 [tool.setuptools.packages.find]
