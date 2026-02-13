@@ -42,6 +42,7 @@ Whether you're extracting text, downloading images, converting articles to clean
 
 -   **Multi-Strategy Scraping**: Automatically tries different methods (`requests`, `Selenium`, `undetected-chromedriver`) to bypass anti-bot measures and handle JavaScript-rendered content.
 -   **Content-to-Markdown**: Intelligently extracts the main content from a webpage, removes noise (like headers, footers, ads), and converts it into clean, readable Markdown.
+-   **Lightweight Document Parsing**: Native support for scraping text from **PDFs** and **DOCX** files using `pypdf` and `python-docx`, with no heavy external dependencies.
 -   **YouTube Transcripts**: Built-in support for fetching video transcripts (manual or auto-generated) via the `youtube-transcript-api`.
 -   **Comprehensive Data Extraction**: Easily scrape text, images, and other structured data using CSS selectors.
 -   **Website Crawler**: Recursively scrape an entire website by following links up to a specified depth, with domain restrictions to keep the crawl focused.

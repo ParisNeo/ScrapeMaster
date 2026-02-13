@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrapemaster"
-version = "0.6.0" # Major feature update
+version = "0.8.0" # Major feature update: Removed docling, added pypdf/python-docx
 authors = [
     { name="ParisNeo", email="parisneo_ai@gmail.com" },
 ]
@@ -38,7 +38,9 @@ dependencies = [
     "pipmaster>=0.7.0",
     "ascii_colors>=0.10.0",
     "youtube-transcript-api>=0.6.0",
-    "wikipedia>=1.4.0", # Added specific library
+    "wikipedia>=1.4.0",
+    "pypdf>=3.0.0",
+    "python-docx>=0.8.11",
 ]
 
 [tool.setuptools.packages.find]

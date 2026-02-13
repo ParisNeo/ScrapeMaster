@@ -6,6 +6,7 @@ import random
 import pickle
 import json
 import re
+import io
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, unquote
 
@@ -20,11 +21,12 @@ try:
         "webdriver-manager",
         "undetected-chromedriver",
         "markdownify",
-        "markdown",              # Added for MD -> HTML conversion (Docling support)
+        "markdown",              # Added for MD -> HTML conversion
         "ascii_colors",
         "youtube_transcript_api",
         "wikipedia",
-        "docling"
+        "pypdf",                 # Lightweight PDF parsing
+        "python-docx"            # Lightweight DOCX parsing
     ]) 
 except ImportError:
     print("Warning: pipmaster not found. Please install it ('pip install pipmaster') for automatic dependency management.")
@@ -66,12 +68,20 @@ try:
 except ImportError:
     WIKIPEDIA_AVAILABLE = False
 
-# Docling Import
+# Lightweight Document Parsers
 try:
-    from docling.document_converter import DocumentConverter
-    DOCLING_AVAILABLE = True
+    from pypdf import PdfReader
+    PYPDF_AVAILABLE = True
 except ImportError:
-    DOCLING_AVAILABLE = False
+    ASCIIColors.warning("pypdf is not available. PDF parsing will be disabled.")
+    PYPDF_AVAILABLE = False
+
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    ASCIIColors.warning("python-docx is not available. DOCX parsing will be disabled.")
+    DOCX_AVAILABLE = False
 
 
 # Local Imports
@@ -86,8 +96,8 @@ from .exceptions import (
 )
 
 # Available strategies
-SUPPORTED_STRATEGIES = ["requests", "selenium", "undetected", "wikipedia", "docling"]
-DEFAULT_STRATEGY_ORDER = ["wikipedia", "requests", "selenium", "undetected"] 
+SUPPORTED_STRATEGIES = ["requests", "selenium", "undetected", "wikipedia", "local_parser"]
+DEFAULT_STRATEGY_ORDER = ["wikipedia", "local_parser", "requests", "selenium", "undetected"] 
 
 def _clean_markdown_code_blocks(markdown_text: str) -> str:
     """Uses regex to remove lines containing only numbers within Markdown code blocks."""
@@ -162,7 +172,7 @@ def _parse_and_markdownify(html_content: str,
 
 class ScrapeMaster:
     """
-    A versatile web scraping class using multiple strategies (requests, Selenium, undetected, wikipedia, docling)
+    A versatile web scraping class using multiple strategies (requests, Selenium, undetected, wikipedia, local_parser)
     for fetching and extracting web content, including Markdown conversion.
     """
     def __init__(self, url: str | None = None, strategy: list[str] | str = 'auto', headless: bool = True):
@@ -320,35 +330,65 @@ class ScrapeMaster:
         except Exception as e:
             return None, None, f"Wikipedia Strategy Error: {e}"
 
-    def _try_docling(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
-        """Attempts to fetch and parse using Docling."""
-        if not DOCLING_AVAILABLE:
-            return None, None, "docling library not installed"
+    def _try_local_parser(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
+        """Attempts to download and parse files (PDF, DOCX) using lightweight local libraries."""
+        ASCIIColors.info("-- Strategy: Trying 'local_parser' for documents --")
+        
+        if not self.current_url:
+            return None, None, "No URL set"
             
-        ASCIIColors.info("-- Strategy: Trying 'docling' --")
         try:
-            converter = DocumentConverter()
-            ASCIIColors.info(f"Docling converting: {self.current_url}")
-            # Docling handles fetching internally
-            result = converter.convert(self.current_url)
+            # 1. Download the file into memory
+            ASCIIColors.info(f"Downloading file: {self.current_url}")
+            self.set_random_user_agent()
+            response = self.session.get(self.current_url, timeout=30)
+            response.raise_for_status()
             
-            markdown_content = result.document.export_to_markdown()
+            file_stream = io.BytesIO(response.content)
+            parsed_path = urlparse(self.current_url).path.lower()
             
-            # Wrap in HTML for compatibility
-            try:
-                import markdown
-                html_content = markdown.markdown(markdown_content)
-                html_content = f"<html><body>{html_content}</body></html>"
-            except ImportError:
-                # Fallback if markdown library is not installed
-                html_content = f"<html><body><pre>{markdown_content}</pre></body></html>"
+            extracted_text = ""
+            file_type = "unknown"
 
+            # 2. Determine type and parse
+            if parsed_path.endswith(".pdf"):
+                if not PYPDF_AVAILABLE:
+                     return None, None, "PDF detected but pypdf library is missing."
+                file_type = "PDF"
+                ASCIIColors.info("Processing as PDF...")
+                reader = PdfReader(file_stream)
+                texts = []
+                for page in reader.pages:
+                    texts.append(page.extract_text() or "")
+                extracted_text = "\n\n".join(texts)
+
+            elif parsed_path.endswith(".docx"):
+                if not DOCX_AVAILABLE:
+                    return None, None, "DOCX detected but python-docx library is missing."
+                file_type = "DOCX"
+                ASCIIColors.info("Processing as DOCX...")
+                doc = DocxDocument(file_stream)
+                extracted_text = "\n\n".join([p.text for p in doc.paragraphs])
+                
+            else:
+                return None, None, f"URL does not end with a supported document extension (.pdf, .docx). Path: {parsed_path}"
+
+            # 3. Format as simple HTML for BeautifulSoup compatibility
+            if not extracted_text.strip():
+                 return None, None, f"{file_type} parsing resulted in empty text."
+
+            # Wrap in HTML so downstream scrape_text/markdown methods work
+            html_content = f"<html><body><div class='document-content'><h1>Document Content ({file_type})</h1><pre>{extracted_text}</pre></div></body></html>"
             soup = BeautifulSoup(html_content, 'lxml')
-            ASCIIColors.success("Docling: Conversion successful.")
+            
+            ASCIIColors.success(f"Local Parser: Successfully extracted text from {file_type}.")
             return html_content, soup, None
 
+        except requests.exceptions.RequestException as e:
+            return None, None, f"Download failed: {e}"
         except Exception as e:
-            return None, None, f"Docling Error: {e}"
+             return None, None, f"Local Parsing Error: {e}"
+
 
     def _try_requests(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
         """Attempts fetching with the requests library."""
@@ -360,7 +400,7 @@ class ScrapeMaster:
             ASCIIColors.debug(f"Requests Status Code: {response.status_code}")
 
             content_type = response.headers.get('Content-Type', '').lower()
-            if 'text/html' not in content_type:
+            if 'text/html' not in content_type and 'application/xhtml+xml' not in content_type:
                 return None, None, f"Non-HTML content type received: {content_type}"
 
             response.raise_for_status() 
@@ -520,11 +560,11 @@ class ScrapeMaster:
             return False
 
         # ----------------------------------------------------------------
-        # 1️⃣  Auto-Detect File Types (PDF, DOCX, etc.) & Enforce Docling
+        # 1️⃣  Auto-Detect File Types (PDF, DOCX) & Enforce Local Parser
         # ----------------------------------------------------------------
-        # Check if the URL points to a document type that Docling handles best.
+        # Check if the URL points to a document type that our local parser handles.
         # This overrides the passed strategy list to ensure the right tool is used.
-        doc_extensions = {'.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.asciidoc'}
+        doc_extensions = {'.pdf', '.docx'}
         try:
             parsed_url = urlparse(self.current_url)
             path_ext = Path(parsed_url.path).suffix.lower()
@@ -538,8 +578,8 @@ class ScrapeMaster:
                 is_doc = True
             
             if is_doc:
-                ASCIIColors.info(f"Document file detected (ext: '{path_ext}'): Enforcing 'docling' strategy.")
-                strategy_list = ['docling']
+                ASCIIColors.info(f"Document file detected (ext: '{path_ext}'): Enforcing 'local_parser' strategy.")
+                strategy_list = ['local_parser']
         except Exception:
             pass # Fallback to standard flow if parsing fails
 
@@ -559,8 +599,8 @@ class ScrapeMaster:
             try:
                 if strategy_name == "wikipedia":
                     html, soup, error_msg = self._try_wikipedia()
-                elif strategy_name == "docling":
-                    html, soup, error_msg = self._try_docling()
+                elif strategy_name == "local_parser":
+                    html, soup, error_msg = self._try_local_parser()
                 elif strategy_name == "requests":
                     html, soup, error_msg = self._try_requests()
                 elif strategy_name == "selenium":
@@ -600,7 +640,7 @@ class ScrapeMaster:
                 ASCIIColors.critical(f"--- Definitive error during '{strategy_name}' strategy: {e} ---")
                 if isinstance(e, DriverInitializationError):
                     # Should we abort completely if driver init fails? 
-                    # Usually better to try other strategies (like docling or requests if they come later)
+                    # Usually better to try other strategies (like requests if they come later)
                     pass 
             except Exception as e:
                 self.last_error = f"{strategy_name.capitalize()} Unexpected Error: {e}"
