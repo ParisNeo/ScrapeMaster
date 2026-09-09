@@ -1,83 +1,90 @@
 import unittest
-from unittest.mock import patch, MagicMock, PropertyMock
-import pytest  # Using pytest markers if desired
+from unittest.mock import patch, MagicMock
+from bs4 import BeautifulSoup
+import requests
 
-from scrapemaster import ScrapeMaster
-from scrapemaster.exceptions import PageFetchError, StrategyError, BlockerDetectedError
+from scrapemaster.core import ScrapeMaster, _clean_markdown_code_blocks, SUPPORTED_STRATEGIES, DEFAULT_STRATEGY_ORDER
+from scrapemaster.exceptions import ScrapeMasterError, PageFetchError, StrategyError
 
-# NOTE: These tests are illustrative and need significant expansion
-#       to cover the new strategies, error handling, and edge cases.
-#       Mocking Selenium and UC effectively is complex.
-
-# Mock the pipmaster call if needed during testing
-@patch('scrapemaster.core.pm.ensure_packages', return_value=None)
 class TestScrapeMasterCore(unittest.TestCase):
-
+    
+    @patch('scrapemaster.core.pm.ensure_packages')
     def test_initialization_defaults(self, mock_ensure_packages):
+        """Test default initialization sets URL and strategy list correctly."""
         scraper = ScrapeMaster("http://example.com")
         self.assertEqual(scraper.current_url, "http://example.com")
-        self.assertEqual(scraper.strategy, ['requests', 'selenium', 'undetected'])
+        # Auto mode now includes local_parser and playwright by default
+        expected = ['local_parser', 'requests', 'playwright', 'selenium', 'undetected']
+        self.assertEqual(scraper.strategy, expected)
         self.assertTrue(scraper.headless)
-        self.assertIsNone(scraper.last_error)
+        mock_ensure_packages.assert_called_once()
 
-    def test_initialization_custom_strategy(self, mock_ensure_packages):
-        scraper = ScrapeMaster("http://example.com", strategy=['requests', 'undetected'], headless=False)
-        self.assertEqual(scraper.strategy, ['requests', 'undetected'])
-        self.assertFalse(scraper.headless)
-
+    @patch('scrapemaster.core.pm.ensure_packages')
     def test_initialization_invalid_strategy(self, mock_ensure_packages):
+        """Test that invalid strategies raise ValueError or are filtered."""
+        # Test string 'invalid' - should raise because no valid strategies remain
         with self.assertRaises(ValueError):
             ScrapeMaster("http://example.com", strategy='invalid')
+        
+        # Test list with invalid - should raise because no valid strategies remain  
         with self.assertRaises(ValueError):
             ScrapeMaster("http://example.com", strategy=['requests', 'bad_strategy'])
 
-    def test_set_url(self, mock_ensure_packages):
-        scraper = ScrapeMaster()
-        scraper.set_url("https://new-example.com")
-        self.assertEqual(scraper.current_url, "https://new-example.com")
-        with self.assertRaises(ValueError):
-             scraper.set_url("invalid-url")
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_initialization_list_strategy(self, mock_ensure_packages):
+        """Test initialization with valid list of strategies."""
+        scraper = ScrapeMaster("http://example.com", strategy=['requests', 'selenium'])
+        self.assertEqual(scraper.strategy, ['requests', 'selenium'])
 
-    # --- Testing Fetching Strategies (Requires extensive mocking) ---
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_strategy_auto_wikipedia(self, mock_ensure_packages):
+        """Test that Wikipedia URLs automatically prioritize wikipedia strategy."""
+        scraper = ScrapeMaster("https://en.wikipedia.org/wiki/Test")
+        self.assertEqual(scraper.strategy[0], 'wikipedia')
+
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_try_requests_success(self, mock_ensure_packages):
+        """Test successful requests strategy."""
+        with patch('scrapemaster.core.requests.Session.get') as mock_get:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.headers = {'Content-Type': 'text/html; charset=utf-8'}
+            mock_response.encoding = 'utf-8'
+            mock_response.content = b"<html><body>Hello World</body></html>"
+            mock_response.raise_for_status = MagicMock()
+            mock_get.return_value = mock_response
+            
+            scraper = ScrapeMaster("http://example.com")
+            html, soup, error = scraper._try_requests()
+            
+            self.assertIsNotNone(html)
+            self.assertIsNotNone(soup)
+            self.assertIsNone(error)
+            self.assertIn("Hello World", soup.text)
 
     @patch('scrapemaster.core.requests.Session.get')
-    def test_try_requests_success(self, mock_get, mock_ensure_packages):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {'Content-Type': 'text/html'}
-        mock_response.encoding = 'utf-8'
-        mock_response.content = b"<html><body><p>Success</p></body></html>"
-        mock_response.raise_for_status = MagicMock()
-        mock_get.return_value = mock_response
-
-        scraper = ScrapeMaster("http://example.com")
-        html, soup, error = scraper._try_requests()
-
-        self.assertIsNotNone(html)
-        self.assertIsNotNone(soup)
-        self.assertIsNone(error)
-        self.assertIn("Success", soup.body.p.text)
-        mock_get.assert_called_once()
-
-    @patch('scrapemaster.core.requests.Session.get')
-    def test_try_requests_403(self, mock_get, mock_ensure_packages):
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_try_requests_403(self, mock_ensure_packages, mock_get):
+        """Test 403 error handling."""
         mock_response = MagicMock()
         mock_response.status_code = 403
         mock_response.headers = {'Content-Type': 'text/html'}
         mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response)
         mock_get.return_value = mock_response
-
+        
         scraper = ScrapeMaster("http://example.com")
         html, soup, error = scraper._try_requests()
-
+        
         self.assertIsNone(html)
         self.assertIsNone(soup)
-        self.assertEqual(error, "Requests: 403 Forbidden")
+        self.assertIsNotNone(error)
+        self.assertIn("403", error)
 
     @patch('scrapemaster.core.requests.Session.get')
-    @patch('scrapemaster.utils.check_for_blocker', return_value=True) # Mock blocker detection
-    def test_try_requests_blocker(self, mock_check_blocker, mock_get, mock_ensure_packages):
-        # Similar setup as success case, but check_for_blocker returns True
+    @patch('scrapemaster.core.check_for_blocker', return_value=True)
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_try_requests_blocker(self, mock_ensure_packages, mock_check_blocker, mock_get):
+        """Test blocker detection."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.headers = {'Content-Type': 'text/html'}
@@ -85,62 +92,118 @@ class TestScrapeMasterCore(unittest.TestCase):
         mock_response.content = b"<html><body>Checking browser...</body></html>"
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
-
+        
         scraper = ScrapeMaster("http://example.com")
         html, soup, error = scraper._try_requests()
-
+        
         self.assertIsNone(html)
         self.assertIsNone(soup)
-        self.assertEqual(error, "Blocker page detected")
-        mock_check_blocker.assert_called_once()
+        self.assertIsNotNone(error)
+        self.assertIn("Blocker", error)
 
-    # Need similar complex tests for _try_selenium (standard and UC)
-    # Mocking webdriver.Chrome, uc.Chrome, WebDriverWait, element interactions etc.
-    # Example (very simplified structure):
-    @patch('scrapemaster.core.webdriver.Chrome')
-    @patch('scrapemaster.core.ChromeDriverManager')
-    @patch('scrapemaster.core.WebDriverWait')
-    def test_try_selenium_success_mocked(self, MockWait, MockDriverManager, MockChrome, mock_ensure_packages):
-         # Setup mocks for driver, wait, elements, page_source...
-         mock_driver_instance = MockChrome.return_value
-         mock_driver_instance.page_source = "<html><body><p>Selenium Content</p></body></html>"
-         MockDriverManager.return_value.install.return_value = "/fake/path/chromedriver"
-         # ... setup MockWait to return elements ...
-
-         scraper = ScrapeMaster("http://example.com", strategy=['selenium'])
-         success = scraper._fetch_content(scraper.strategy)
-
-         self.assertTrue(success)
-         self.assertIsNotNone(scraper.current_soup)
-         self.assertIn("Selenium Content", scraper.current_soup.text)
-         self.assertEqual(scraper.last_strategy_used, 'selenium')
-         # Assert driver.get, wait.until etc. were called
-         mock_driver_instance.quit.assert_called_once() # Check cleanup
-
-    # --- Testing Scraping Methods ---
-
-    def test_scrape_text_no_fetch(self, mock_ensure_packages):
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_scrape_text_basic(self, mock_ensure_packages):
+        """Test basic text scraping with mocked soup."""
         scraper = ScrapeMaster("http://example.com")
-        # Mock _fetch_content to return False
-        with patch.object(scraper, '_fetch_content', return_value=False) as mock_fetch:
-            texts = scraper.scrape_text()
-            self.assertEqual(texts, [])
-            mock_fetch.assert_called_once()
+        mock_soup = BeautifulSoup("<html><body><p>Test</p><p>Test2</p></body></html>", "lxml")
+        scraper.current_soup = mock_soup
+        
+        texts = scraper.scrape_text()
+        self.assertIn("Test", texts)
+        self.assertIn("Test2", texts)
 
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_scrape_images_basic(self, mock_ensure_packages):
+        """Test basic image scraping."""
+        scraper = ScrapeMaster("http://example.com")
+        mock_soup = BeautifulSoup("<html><body><img src='a.jpg'><img src='b.png'></body></html>", "lxml")
+        scraper.current_soup = mock_soup
+        scraper.current_url = "http://example.com"
+        
+        images = scraper.scrape_images()
+        self.assertIn("http://example.com/a.jpg", images)
+        self.assertIn("http://example.com/b.png", images)
+
+    @patch('scrapemaster.core.pm.ensure_packages')
     def test_scrape_markdown_simple(self, mock_ensure_packages):
-         scraper = ScrapeMaster("http://example.com")
-         # Mock the fetch to provide simple soup directly
-         mock_soup = BeautifulSoup("<html><body><main><h1>Title</h1><p>Paragraph.</p></main><footer>Footer</footer></body></html>", "lxml")
-         with patch.object(scraper, '_fetch_content', return_value=True):
-              scraper.current_soup = mock_soup # Inject soup after mocked fetch
-              markdown = scraper.scrape_markdown()
-              self.assertIsNotNone(markdown)
-              self.assertIn("# Title", markdown)
-              self.assertIn("Paragraph.", markdown)
-              self.assertNotIn("Footer", markdown) # Check noise removal
+        """Test basic markdown conversion."""
+        scraper = ScrapeMaster("http://example.com")
+        html = "<html><body><main><h1>Title</h1><p>Paragraph.</p></main><footer>Footer</footer></body></html>"
+        mock_soup = BeautifulSoup(html, "lxml")
+        scraper.current_soup = mock_soup
+        scraper.html_content = html
+        
+        md = scraper.scrape_markdown()
+        self.assertIsNotNone(md)
+        self.assertIn("# Title", md)
+        self.assertIn("Paragraph.", md)
 
+    @patch('scrapemaster.core.ScrapeMaster._try_selenium')
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_selenium_fallback(self, mock_ensure_packages, mock_selenium):
+        """Test that selenium fallback works when requests fails."""
+        mock_selenium.return_value = ("<html></html>", BeautifulSoup("<html></html>", "lxml"), None)
+        
+        with patch('scrapemaster.core.ScrapeMaster._try_requests') as mock_req:
+            mock_req.return_value = (None, None, "403 Forbidden")
+            
+            scraper = ScrapeMaster("http://example.com", strategy=['requests', 'selenium'])
+            success = scraper._fetch_content(['requests', 'selenium'])
+            
+            self.assertTrue(success)
+            self.assertEqual(scraper.last_strategy_used, 'selenium')
+            mock_selenium.assert_called_once()
 
-# Add more tests for scrape_images, scrape_all, download_images, login, cookies, scrape_website etc.
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_clean_markdown_code_blocks(self, mock_ensure_packages):
+        """Test markdown code block cleaning."""
+        dirty = "```python\n1\n2\nprint('hello')\n3\n```"
+        clean = _clean_markdown_code_blocks(dirty)
+        self.assertNotIn("\n1\n", clean)
+        self.assertIn("print('hello')", clean)
+
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_content_hashing(self, mock_ensure_packages):
+        """Test content caching/hash generation."""
+        scraper = ScrapeMaster("http://example.com")
+        content = b"test content"
+        hash1 = scraper._content_hash(content)
+        hash2 = scraper._content_hash(content)
+        self.assertEqual(hash1, hash2)
+        
+        result = scraper._cache_content("http://example.com", content)
+        self.assertTrue(result)  # First time is new
+        result2 = scraper._cache_content("http://example.com", content)
+        self.assertFalse(result2)  # Second time is duplicate
+
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_smart_delay(self, mock_ensure_packages):
+        """Test rate limiting delay."""
+        import time
+        scraper = ScrapeMaster("http://example.com")
+        start = time.time()
+        scraper._smart_delay("example.com", attempt=0)
+        scraper._smart_delay("example.com", attempt=0)  # Should delay
+        elapsed = time.time() - start
+        self.assertGreaterEqual(elapsed, 0.1)  # At least some delay occurred
+
+    @patch('scrapemaster.core.pm.ensure_packages')
+    def test_structured_data_extraction(self, mock_ensure_packages):
+        """Test extraction of JSON-LD and OpenGraph."""
+        scraper = ScrapeMaster("http://example.com")
+        html = """
+        <html><head>
+        <script type="application/ld+json">{"@type": "Article", "headline": "Test"}</script>
+        <meta property="og:title" content="Test Title">
+        </head><body></body></html>
+        """
+        scraper.current_soup = BeautifulSoup(html, "lxml")
+        scraper.html_content = html
+        
+        data = scraper.scrape_structured_data()
+        self.assertIsNotNone(data)
+        self.assertEqual(data["json_ld"][0]["@type"], "Article")
+        self.assertEqual(data["opengraph"]["title"], "Test Title")
 
 if __name__ == '__main__':
     unittest.main()

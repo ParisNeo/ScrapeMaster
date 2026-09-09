@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrapemaster"
-version = "0.8.0" # Major feature update: Removed docling, added pypdf/python-docx
+version = "0.8.6"
 authors = [
     { name="ParisNeo", email="parisneo_ai@gmail.com" },
 ]
-description = "A versatile web scraping library with configurable multi-strategy fetching and specialized handlers"
+description = "A versatile web scraping library with GUI, async support, and multi-strategy fetching"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -22,10 +22,10 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: Markup :: HTML",
+    "Topic :: Desktop Environment :: Application Launchers",
 ]
 
 dependencies = [
@@ -41,28 +41,42 @@ dependencies = [
     "youtube-transcript-api>=0.6.0",
     "wikipedia>=1.4.0",
     "pypdf>=3.0.0",
-    "python-docx>=0.8.11",
+    "python-docx>=0.8.11"
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-exclude = ["venv*", "*.venv*", "env*", "*.env*"]
-
 [project.optional-dependencies]
+# Async support for high-performance bulk scraping
+async = [
+    "aiohttp>=3.8.0",
+]
+# Modern browser automation (recommended over Selenium)
+playwright = [
+    "playwright>=1.40.0",
+]
+# TLS fingerprint spoofing for advanced bot bypass
+tls = [
+    "curl_cffi>=0.6.0",
+]
+# GUI support (PySide6 for LGPL compatibility)
+gui = [
+    "PySide6>=6.0.0",
+    "markdown>=3.3.0",
+]
+# Development tools
 dev = [
     "pytest>=6.2.4",
+    "pytest-asyncio>=0.21.0",
     "flake8>=3.9.2",
     "black>=22.3.0",
     "pytest-mock>=3.6.1",
 ]
 
-[project.urls]
-Homepage = "https://github.com/ParisNeo/ScrapeMaster"
-Issues = "https://github.com/ParisNeo/ScrapeMaster/issues"
+[project.scripts]
+scrapemaster-gui = "scrapemaster.gui:main"
 
-[tool.setuptools]
-# If using find:, specify it here too
-# packages = ["find:"]
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests", "tests.*", "examples", "examples.*", "venv*", "*.venv*", "env*", "*.env*"]
 
 [tool.black]
 line-length = 88

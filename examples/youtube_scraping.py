@@ -1,69 +1,77 @@
+"""
+YouTube Scraping Example - Demonstrates video metadata and transcript extraction
+Inspired by the clean transcript pattern in the original library.
+"""
 import sys
 import os
 
-# --- Import the ScrapeMaster Library (Local import for development) ---
-# This ensures we use the local version of the library instead of an installed one
+# Add parent directory to path for local development
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from scrapemaster import ScrapeMaster
 
 def main():
-    # Initialize ScrapeMaster
-    # Note: YouTube scraping relies on the API wrapper, so browser strategies are not used here,
-    # but the class is still the entry point.
+    # Initialize
     scraper = ScrapeMaster()
-
-    # YouTube Video URL (Example: "Me at the zoo" - the first ever YouTube video)
-    video_url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
     
-    print(f"--- ScrapeMaster YouTube Example ---")
-    print(f"Target Video: {video_url}\n")
-
-    # ---------------------------------------------------------
-    # 1. Check Available Languages
-    # ---------------------------------------------------------
-    print("[1] Fetching available transcript languages...")
-    languages = scraper.get_youtube_languages(video_url)
+    video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Never Gonna Give You Up (test video)
     
-    if languages:
-        print(f"Found {len(languages)} available transcript(s):")
-        for lang in languages:
-            type_str = "Generated" if lang['is_generated'] else "Manual"
-            print(f" - Code: {lang['code']:<5} | Name: {lang['name']:<15} | Type: {type_str}")
-    else:
-        print("No transcripts found or error occurred.")
+    print(f"--- ScrapeMaster Video Extraction Demo ---")
+    print(f"Target: {video_url}\n")
+    
+    # 1. Unified Video Interface (Auto-detects YouTube)
+    print("[1] Extracting video data (transcript + metadata)...")
+    video_data = scraper.scrape_video(video_url, extract_type='auto')
+    
+    if not video_data:
+        print("Failed to detect video platform.")
         return
-
-    # ---------------------------------------------------------
-    # 2. Fetch Transcript (Auto-Detect)
-    # ---------------------------------------------------------
-    print("\n[2] Fetching transcript (Auto-detect mode)...")
-    # This automatically prefers manually created transcripts over auto-generated ones
-    transcript_text = scraper.scrape_youtube_transcript(video_url)
+        
+    print(f"✓ Platform: {video_data['source']}")
+    print(f"✓ Video ID: {video_data['video_id']}")
     
-    if transcript_text:
-        print(f"Success! Retrieved {len(transcript_text)} characters.")
-        print("-" * 40)
-        print(f"Preview:\n{transcript_text[:300]}...")
-        print("-" * 40)
+    if video_data.get('transcript'):
+        print(f"✓ Transcript: {len(video_data['transcript'])} characters")
+        print(f"  Preview: {video_data['transcript'][:150]}...")
     else:
-        print("Failed to retrieve transcript.")
+        print("✗ No transcript available")
+        
+    if video_data.get('metadata'):
+        meta = video_data['metadata']
+        print(f"✓ Title: {meta.get('title', 'Unknown')}")
+        if meta.get('views'):
+            print(f"✓ Views: {meta['views']}")
 
-    # ---------------------------------------------------------
-    # 3. Fetch Transcript (Specific Language)
-    # ---------------------------------------------------------
-    # Example: If the video has 'es' (Spanish), try to fetch that specifically.
-    # For this demo, we'll just pick the last one from the list we found earlier.
-    if languages:
-        target_lang = languages[-1]['code'] 
-        print(f"\n[3] Attempting to fetch specific language: '{target_lang}'...")
-        
-        specific_transcript = scraper.scrape_youtube_transcript(video_url, language_code=target_lang)
-        
-        if specific_transcript:
-            print(f"Success! Retrieved {len(specific_transcript)} characters for '{target_lang}'.")
-        else:
-            print(f"Could not retrieve transcript for '{target_lang}'.")
+    # 2. Media Links Extraction (Thumbnail, etc.)
+    print("\n[2] Extracting media links from page...")
+    media = scraper.scrape_media_links(['image'])
+    if media['images']:
+        print(f"✓ Found {len(media['images'])} images (including thumbnails)")
+
+    # 3. Podcast Feed Example
+    print("\n[3] Podcast Feed Detection...")
+    # Example with a test podcast feed
+    podcast_url = "https://api.substack.com/feed/podcast/10845.rss"  # Example RSS
+    feed = scraper.scrape_podcast_feed(podcast_url)
+    if feed and feed['episodes']:
+        print(f"✓ Podcast: {feed['title']}")
+        print(f"✓ Latest episode: {feed['episodes'][0]['title']}")
+    else:
+        print("✗ Could not fetch podcast feed (this is normal if feed is private)")
+
+    # 4. News Article Extraction (Author, Date, Reading Time)
+    print("\n[4] News Article Extraction...")
+    article_url = "https://www.theverge.com/2024/1/1/sample-article"  # Replace with real URL
+    try:
+        article = scraper.scrape_article()
+        if article:
+            print(f"✓ Title: {article['title']}")
+            print(f"✓ Author: {article.get('author', 'Unknown')}")
+            print(f"✓ Reading Time: {article.get('reading_time_min')} min")
+    except:
+        print("✗ Article extraction test skipped (needs valid news URL)")
+
+    print("\n--- Demo Complete ---")
 
 if __name__ == "__main__":
     main()

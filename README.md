@@ -34,176 +34,218 @@
 
 ## 🚀 Overview
 
-**ScrapeMaster** is a comprehensive Python library that simplifies the complexities of web scraping. It intelligently switches between multiple scraping strategies—from simple `requests` to browser automation with `Selenium` and `undetected-chromedriver`—to ensure you get the data you need, when you need it.
+**ScrapeMaster** is a comprehensive Python library that simplifies the complexities of web scraping. It intelligently switches between multiple scraping strategies—from simple `requests` to browser automation with `Selenium`, `Playwright`, and `undetected-chromedriver`—to ensure you get the data you need, when you need it.
 
-Whether you're extracting text, downloading images, converting articles to clean Markdown, crawling entire websites, or even fetching YouTube transcripts, ScrapeMaster provides a unified and powerful API to handle it all.
+Whether you're extracting text, downloading images, converting articles to clean Markdown, crawling entire websites, fetching YouTube transcripts, or parsing structured data from JSON-LD, ScrapeMaster provides a unified and powerful API to handle it all.
 
 ## ✨ Key Features
 
--   **Multi-Strategy Scraping**: Automatically tries different methods (`requests`, `Selenium`, `undetected-chromedriver`) to bypass anti-bot measures and handle JavaScript-rendered content.
--   **Content-to-Markdown**: Intelligently extracts the main content from a webpage, removes noise (like headers, footers, ads), and converts it into clean, readable Markdown.
--   **Lightweight Document Parsing**: Native support for scraping text from **PDFs** and **DOCX** files using `pypdf` and `python-docx`, with no heavy external dependencies.
--   **YouTube Transcripts**: Built-in support for fetching video transcripts (manual or auto-generated) via the `youtube-transcript-api`.
--   **Comprehensive Data Extraction**: Easily scrape text, images, and other structured data using CSS selectors.
--   **Website Crawler**: Recursively scrape an entire website by following links up to a specified depth, with domain restrictions to keep the crawl focused.
--   **Anti-Bot Circumvention**: Utilizes `undetected-chromedriver` and rotates user agents to appear more like a human user and avoid common blockers.
--   **Session & Cookie Management**: Persist sessions across requests by saving and loading cookies for both `requests` and `Selenium`.
--   **Image Downloader**: A built-in utility to download all scraped images to a local directory.
--   **Robust Error Handling**: Gracefully manages failures, providing clear feedback on which strategies failed and why.
+-   **Multi-Strategy Scraping**: Automatically tries `requests`, `Playwright`, `Selenium`, or `undetected-chromedriver` to bypass anti-bot measures. Now supports `curl_cffi` for TLS fingerprint spoofing.
+-   **Async Bulk Operations**: Use `scrape_many()` for high-performance concurrent scraping with `aiohttp`, complete with auto-rate limiting and content deduplication.
+-   **Sitemap-Based Discovery**: Automatically discover and crawl URLs from `sitemap.xml` (including sitemap indexes) for faster, more focused harvesting.
+-   **Structured Data Extraction**: Native support for JSON-LD, Microdata, and OpenGraph metadata extraction.
+-   **Smart Content Pipeline**: Post-processors allow custom transformations on Markdown output. Content deduplication prevents re-processing identical pages.
+-   **Advanced Evasion**: Undetected Chromedriver, Playwright stealth, and TLS fingerprint impersonation via `curl_cffi`.
+-   **Rate Limiting with Jitter**: Exponential backoff prevents IP bans; per-domain tracking ensures polite scraping.
+-   **Export Pipelines**: Direct export to JSON, Notion databases, and Obsidian vaults. Screenshot capture for visual debugging.
+-   **Content Intelligence**: MD5 hashing for deduplication, incremental scraping with SQLite caching, and infinite scroll handling for SPAs.
+-   **Network Interception**: Capture XHR/API calls using Playwright's network events.
+-   **Plugin System**: Register custom scraping strategies via `register_strategy()`.
 
 ## 📦 Installation
-
-You can install ScrapeMaster directly from PyPI:
 
 ```bash
 pip install ScrapeMaster
 ```
 
-The library uses `pipmaster` to automatically manage and install its dependencies (like `requests`, `selenium`, `youtube-transcript-api`, etc.) upon first use, ensuring a smooth setup process.
+For full functionality (Playwright, async, TLS spoofing), install optional dependencies:
+
+```bash
+pip install Playwright aiohttp curl_cffi xmltodict
+playwright install chromium  # Required for Playwright strategy
+```
+
+The library uses `pipmaster` to automatically manage core dependencies upon first use.
 
 ## Usage Examples
 
-### 1. Simple Text and Image Scraping
-
-Fetch a static page and extract all paragraph texts and image URLs.
+### 1. Simple Scraping with Auto-Strategy
 
 ```python
 from scrapemaster import ScrapeMaster
 
-# Initialize with the target URL
 scraper = ScrapeMaster('https://example.com')
-
-# Scrape text from <p> tags and image URLs from <img> tags
-results = scraper.scrape_all(
-    text_selectors=['p'],
-    image_selectors=['img']
-)
-
-if results:
-    print("--- Texts ---")
-    for text in results['texts']:
-        print(f"- {text}")
-        
-    print("\n--- Image URLs ---")
-    for url in results['image_urls']:
-        print(f"- {url}")
+markdown = scraper.scrape_markdown()
+print(markdown)
 ```
 
-### 2. Scraping a JavaScript-Rendered Page
-
-ScrapeMaster will automatically switch to a browser-based strategy if `requests` fails or is blocked.
+### 2. Async Bulk Scraping (10x Faster)
 
 ```python
+import asyncio
 from scrapemaster import ScrapeMaster
 
-# This URL likely requires JavaScript to load its content
-url = "https://quotes.toscrape.com/js/"
-scraper = ScrapeMaster(url)
-
-# The 'auto' strategy will try requests, then selenium, then undetected
-# to ensure content is loaded.
-results = scraper.scrape_all(text_selectors=['.text', '.author'])
-
-if results:
-    for text in results['texts']:
-        print(text)
-
-print(f"\nSuccessfully used strategy: {scraper.last_strategy_used}")
-```
-
-### 3. Converting an Article to Clean Markdown
-
-Extract the main content of a blog post or documentation page and save it as Markdown.
-
-```python
-from scrapemaster import ScrapeMaster
-
-url = "https://www.scrapethissite.com/pages/simple/"
-scraper = ScrapeMaster(url)
-
-# This method focuses on finding the main content and cleaning it
-markdown_content = scraper.scrape_markdown()
-
-if markdown_content:
-    print(markdown_content)
-    # You can save this to a file
-    # with open('article.md', 'w', encoding='utf-8') as f:
-    #     f.write(markdown_content)
-```
-
-### 4. Crawling a Website and Downloading Images
-
-Crawl the first two levels of a website, aggregate all text, and download all found images.
-
-```python
-from scrapemaster import ScrapeMaster
-
-url = "https://blog.scrapinghub.com/"
-scraper = ScrapeMaster(url)
-
-# Crawl up to 1 level deep (start page + links on it)
-# and download all images to 'scraped_images' directory.
-results = scraper.scrape_all(
-    max_depth=1,
-    crawl_delay=1,  # 1-second delay between page requests
-    download_images_output_dir='scraped_images'
-)
-
-if results:
-    print(f"Successfully visited {len(results['visited_urls'])} pages.")
-    print(f"Found {len(results['texts'])} text fragments.")
-    print(f"Found and downloaded {len(results['image_urls'])} unique images.")
-```
-
-### 5. Scraping YouTube Transcripts
-
-Retrieve transcripts from YouTube videos. You can list available languages and fetch the transcript text (preferring manually created ones over auto-generated).
-
-```python
-from scrapemaster import ScrapeMaster
+urls = [
+    "https://blog.example.com/post1",
+    "https://blog.example.com/post2",
+    "https://blog.example.com/post3",
+]
 
 scraper = ScrapeMaster()
-video_url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 
-# 1. List available languages
-languages = scraper.get_youtube_languages(video_url)
-if languages:
-    print("Available Languages:")
-    for lang in languages:
-        print(f"- {lang['code']}: {lang['name']} ({'Generated' if lang['is_generated'] else 'Manual'})")
+# Async batch scraping with auto rate limiting
+results = await scraper.scrape_many_async(
+    urls, 
+    max_concurrent=5, 
+    extract_markdown=True
+)
 
-# 2. Fetch the transcript (Auto-detects best available, or pass language_code='en')
-transcript = scraper.scrape_youtube_transcript(video_url)
+for result in results:
+    if "markdown" in result:
+        print(f"Scraped {result['url']}: {len(result['markdown'])} chars")
+    else:
+        print(f"Failed {result['url']}: {result.get('error')}")
+```
 
-if transcript:
-    print("\n--- Transcript Preview ---")
-    print(transcript[:500] + "...") 
+### 3. Sitemap-Based Discovery
+
+```python
+scraper = ScrapeMaster("https://example.com")
+
+# Automatically discover all URLs from sitemap.xml
+results = scraper.scrape_all(
+    use_sitemap=True,
+    url_pattern=r"/blog/\d{4}/",  # Only blog posts
+    sitemap_limit=50,
+    convert_to_markdown=True
+)
+
+print(f"Scraped {len(results['urls'])} pages from sitemap")
+```
+
+### 4. Structured Data Extraction (JSON-LD, Microdata)
+
+```python
+scraper = ScrapeMaster("https://shopping.example.com/product/123")
+structured = scraper.scrape_structured_data()
+
+if structured and structured["json_ld"]:
+    product = structured["json_ld"][0]
+    print(f"Product: {product.get('name')}, Price: {product.get('offers', {}).get('price')}")
+```
+
+### 5. Incremental Scraping (Skip Unchanged Pages)
+
+```python
+scraper = ScrapeMaster()
+
+# First run: scrapes everything
+results = scraper.scrape_incremental(cache_file="crawl_cache.db")
+print(f"Updated: {len(results['updated'])}, Skipped: {len(results['skipped'])}")
+
+# Second run: skips pages with same content hash
+```
+
+### 6. Export to External Tools
+
+```python
+# Obsidian vault export
+scraper = ScrapeMaster("https://docs.python.org/3/")
+scraper.export_to_obsidian(vault_path="./docs_vault", filename="python_docs.md")
+
+# Notion database export (requires integration token)
+scraper.export_to_notion(
+    database_id="abc123", 
+    token="secret_xxxxx"
+)
+
+# JSON export with metadata
+scraper.export_to_json("output.json", include_metadata=True)
+```
+
+### 7. Plugin System (Custom Strategies)
+
+```python
+from scrapemaster import ScrapeMaster
+from bs4 import BeautifulSoup
+
+def custom_api_strategy(scraper_instance, url):
+    """Custom strategy for JSON APIs"""
+    import requests
+    r = requests.get(url + "/api/data")
+    soup = BeautifulSoup(f"<pre>{r.text}</pre>", "lxml")
+    return r.text, soup, None
+
+# Register and use
+ScrapeMaster.register_strategy("api_endpoint", custom_api_strategy)
+
+scraper = ScrapeMaster("https://api.example.com", strategy=["api_endpoint"])
+results = scraper.scrape_markdown()
+```
+
+### 8. Advanced Anti-Bot Evasion
+
+```python
+# Force Playwright for maximum stealth (modern alternative to Selenium)
+scraper = ScrapeMaster(
+    "https://protected-site.com", 
+    strategy=["playwright"], 
+    headless=True
+)
+markdown = scraper.scrape_markdown()
+
+# Or use curl_cffi for TLS fingerprint spoofing (bypasses basic fingerprinting)
+scraper = ScrapeMaster(
+    "https://protected-site.com", 
+    strategy=["curl_cffi"]
+)
+```
+
+### 9. Screenshot Capture
+
+```python
+scraper = ScrapeMaster("https://example.com", strategy=["selenium"])
+scraper.scrape_markdown()  # Initializes driver
+scraper.save_screenshot("debug.png", full_page=True)
+```
+
+### 10. Infinite Scroll / Infinite Pagination
+
+```python
+scraper = ScrapeMaster("https://twitter.com/some_thread", strategy=["playwright"])
+# Automatically scrolls and captures dynamic content
+content = scraper.scrape_infinite_scroll(scroll_pause=2, max_scrolls=20)
 ```
 
 ## Core Concepts
 
-ScrapeMaster's power comes from its layered, fallback-driven approach. When you request data, it follows a strategy order (default is `['requests', 'selenium', 'undetected']`):
+ScrapeMaster's power comes from its layered, fallback-driven approach. When you request data, it follows a strategy order:
 
-1.  **Requests**: The fastest method. It makes a simple HTTP GET request. If it receives a successful HTML response and doesn't detect a blocker, it succeeds.
-2.  **Selenium**: If `requests` fails (e.g., due to a 403 error or a blocker page), ScrapeMaster launches a standard Selenium-controlled Chrome browser to render the page, executing JavaScript.
-3.  **Undetected-Chromedriver**: If standard Selenium is also blocked, it escalates to `undetected-chromedriver`, which is patched to be much harder for services like Cloudflare to detect.
+1.  **Wikipedia**: Native API for Wikipedia URLs (fastest, most reliable).
+2.  **Local Parser**: PDF/DOCX direct download and extraction.
+3.  **Requests**: Fast HTTP for static pages.
+4.  **Playwright**: Modern browser automation (recommended for SPAs).
+5.  **Selenium**: Legacy browser automation.
+6.  **Undetected**: Patched Chrome for Cloudflare/WAF bypass.
+7.  **Custom**: Your registered plugins.
 
 This "auto" mode ensures the highest chance of success with optimal performance. You can also force a specific strategy if you know what the target site requires.
 
+## Security Best Practices
+
+- **URL Validation**: All inputs are validated; `javascript:` and `data:` URLs are rejected.
+- **Path Sanitization**: `export_to_obsidian` and `save_screenshot` sanitize filenames to prevent directory traversal.
+- **No Hardcoded Credentials**: Notion integration requires explicit token passing.
+- **Rate Limiting**: Built-in exponential backoff prevents aggressive scraping of single domains.
+
 ## 🤝 Contributing
 
-Contributions are welcome! If you have ideas for new features, bug fixes, or improvements, please feel free to:
-
-1.  Open an issue to discuss the change.
-2.  Fork the repository and create a new branch.
-3.  Submit a pull request with a clear description of your changes.
+Contributions are welcome! Please read our contributing guidelines and submit pull requests with clear descriptions.
 
 ## 📜 License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Apache-2.0. See [LICENSE](LICENSE) for details.
 
 ## 👤 Author
 
-**ScrapeMaster** is developed and maintained by **ParisNeo**.
-
--   **GitHub**: [@ParisNeo](https://github.com/ParisNeo)
+**ParisNeo** - [GitHub](https://github.com/ParisNeo)
