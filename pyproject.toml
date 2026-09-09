@@ -25,7 +25,6 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: Markup :: HTML",
-    "Topic :: Desktop Environment :: Application Launchers",
 ]
 
 dependencies = [
