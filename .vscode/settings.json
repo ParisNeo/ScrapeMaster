@@ -1,3 +1,61 @@
 {
-    "ros.distro": "noetic"
+    "ros.distro": "noetic",
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/.lollms/**": true,
+        "**/.git/**": true,
+        "**/.vscode/**": true,
+        "**/node_modules/**": true,
+        "**/venv/**": true,
+        "**/.venv/**": true,
+        "**/env/**": true,
+        "**/.env/**": true,
+        "**/dist/**": true,
+        "**/build/**": true,
+        "**/bin/**": true,
+        "**/obj/**": true,
+        "**/target/**": true,
+        "**/.*/**": true
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/*.code-search": true,
+        "**/.lollms/**": true,
+        "**/.git/**": true,
+        "**/.vscode/**": true,
+        "**/node_modules/**": true,
+        "**/venv/**": true,
+        "**/.venv/**": true,
+        "**/env/**": true,
+        "**/.env/**": true,
+        "**/dist/**": true,
+        "**/build/**": true,
+        "**/bin/**": true,
+        "**/obj/**": true,
+        "**/target/**": true,
+        "**/.*/**": true
+    },
+    "python.analysis.exclude": [
+        "**/.lollms/**",
+        "**/venv/**",
+        "**/node_modules/**",
+        "**/.*/**"
+    ],
+    "python.analysis.ignore": [
+        "**/.lollms/**",
+        "**/venv/**",
+        "**/node_modules/**",
+        "**/.*/**"
+    ],
+    "isort.check": false,
+    "isort.importStrategy": "useBundled",
+    "python.analysis.indexing": false,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": "never"
+    }
 }
