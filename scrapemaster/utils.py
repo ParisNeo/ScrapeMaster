@@ -149,69 +149,90 @@ def is_valid_url(url_string: str | None) -> bool:
 def sanitize_filename(filename: str, max_length: int = 255, replacement: str = '_') -> str:
     """
     Sanitize a filename to prevent directory traversal and invalid characters.
-    
-    Args:
-        filename: Raw filename (may contain path segments)
-        max_length: Maximum allowed length
-        replacement: Character to replace invalid chars with
-        
-    Returns:
-        Safe filename string
-        
-    Security: Removes .., leading dots, and path separators to prevent traversal
+    Returns 'download' for empty input.
+    Hidden files (starting with '.') are prefixed with 'hidden.' to prevent execution/accidental exposure.
     """
     if not filename:
         return 'download'
     
-    # Take only the basename to strip directory paths
-    filename = Path(filename).name
+    # Normalize path separators to forward slash
+    normalized = filename.replace('\\', '/')
     
-    # Remove dangerous prefixes
-    if filename.startswith('.'):
-        filename = 'hidden' + filename
+    # Detect hidden file: starts with '.', but NOT traversal paths (../ or /etc/...)
+    # Single dotfile like '.env' -> True; '../../../etc/passwd' -> False
+    is_hidden_intent = (
+        len(normalized) > 0
+        and normalized.startswith('.')
+        and not normalized.startswith('..')
+        and (len(normalized) > 1 and normalized[1] not in ('.', '/'))
+    )
     
-    # Replace invalid characters
-    safe = _SAFE_FILENAME_RE.sub(replacement, filename)
+    # Split by path separator and filter out traversal attempts
+    parts = []
+    for part in normalized.split('/'):
+        if part in ('', '.', '..'):
+            continue
+        parts.append(part)
+    
+    # Join parts back or fallback to download
+    safe_name = '_'.join(parts) if parts else 'download'
+    
+    # Replace remaining invalid characters with replacement char
+    safe_name = re.sub(r'[^\w\-./]', replacement, safe_name)
     
     # Collapse multiple replacement chars
-    safe = re.sub(re.escape(replacement) + r'{2,}', replacement, safe)
+    safe_name = re.sub(re.escape(replacement) + r'{2,}', replacement, safe_name)
     
-    # Remove trailing dots and spaces (Windows compatibility)
-    safe = safe.rstrip(' .')
-    if not safe:
-        safe = 'unnamed'
+    # Clean up leading/trailing dots and replacement chars
+    safe_name = safe_name.strip('.' + replacement)
     
-    # Enforce length limit
-    if len(safe) > max_length:
-        name, ext = safe.rsplit('.', 1) if '.' in safe else (safe, '')
-        ext_len = len(ext) + 1 if ext else 0
-        safe = name[:max_length - ext_len] + ('.' + ext if ext else '')
+    # Restore hidden file intent with safe prefix
+    if is_hidden_intent and safe_name:
+        safe_name = 'hidden.' + safe_name
     
-    return safe
+    # Enforce length limit while preserving extension
+    if len(safe_name) > max_length:
+        if '.' in safe_name:
+            name_part, ext = safe_name.rsplit('.', 1)
+            ext = '.' + ext
+        else:
+            name_part, ext = safe_name, ''
+        
+        available = max_length - len(ext)
+        if available > 0:
+            safe_name = name_part[:available] + ext
+        else:
+            safe_name = safe_name[:max_length]
+    
+    return safe_name or 'download'
 
 
 def resolve_safe_path(base_directory: str | Path, filename: str) -> Path:
     """
     Resolve path and ensure it stays within base_directory (prevents path traversal).
     
-    Args:
-        base_directory: The allowed root directory
-        filename: The filename or relative path
-        
-    Returns:
-        Resolved absolute Path
-        
     Raises:
-        ValueError: If the resolved path escapes the base directory
+        ValueError: If the path attempts to escape the base directory or contains traversal sequences.
     """
     base = Path(base_directory).resolve()
-    target = (base / sanitize_filename(filename)).resolve()
     
-    # Security: Check if the resolved path is still within base_directory
+    # Check for explicit path traversal attempts before sanitization
+    if '..' in filename:
+        raise ValueError(f"Path traversal detected: {filename}")
+    
+    # Sanitize filename (preserves structure like etc/passwd from ../../../etc/passwd)
+    safe_filename = sanitize_filename(filename)
+    
+    # Ensure we only use the filename part, not any path structure that might remain
+    safe_filename = safe_filename.split('/')[-1]
+    
+    target = (base / safe_filename).resolve()
+    
+    # Double-check: ensure the resolved path is actually within the base directory
     try:
         target.relative_to(base)
     except ValueError:
-        raise ValueError(f"Path traversal detected: {filename} escapes {base_directory}")
+        raise ValueError(f"Path traversal detected: {filename}")
     
     return target
 

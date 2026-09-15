@@ -55,6 +55,7 @@ except ImportError:
 from .core import ScrapeMaster, SUPPORTED_STRATEGIES, DEFAULT_STRATEGY_ORDER
 from .exceptions import ScrapeMasterError
 from .utils import is_valid_url, sanitize_filename
+# markdown imported locally in try_render_markdown where needed
 
 # Constants
 APP_NAME: Final = "ScrapeMaster GUI"
@@ -880,7 +881,7 @@ tags: [scrapemaster]
 
         def closeEvent(self, event: QCloseEvent):
             # Safely cleanup - check existence before accessing to avoid RuntimeError
-            if self.worker_thread is not None:
+            if self.worker_thread is not None and self.worker is not None:
                 try:
                     if self.worker_thread.isRunning():
                         if self.worker is not None:
