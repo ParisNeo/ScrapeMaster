@@ -68,14 +68,21 @@ if PYSIDE6_AVAILABLE:
     
     class ScrapeWorker(QObject):
         """Enhanced worker supporting all content types."""
-        progress = Signal(str)
-        finished = Signal(dict, str, str)  # results, markdown, error_msg
-        error_occurred = Signal(str)
-        media_found = Signal(dict)  # media links
-        structured_data_found = Signal(dict)  # json-ld, opengraph
 
-        def __init__(self, url: str, strategies: List[str], headless: bool, 
-                     depth: int, content_type: str = 'auto'):
+        progress = Signal(str)
+        finished = Signal(dict, str, str)
+        error_occurred = Signal(str)
+        media_found = Signal(dict)
+        structured_data_found = Signal(dict)
+
+        def __init__(
+            self,
+            url: str,
+            strategies: List[str],
+            headless: bool,
+            depth: int,
+            content_type: str = 'auto'
+        ):
             super().__init__()
             self.url = url
             self.strategies = strategies

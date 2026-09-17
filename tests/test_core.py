@@ -7,8 +7,18 @@ import json
 import tempfile
 import os
 
-from scrapemaster.core import ScrapeMaster, _clean_markdown_code_blocks, SUPPORTED_STRATEGIES, DEFAULT_STRATEGY_ORDER
-from scrapemaster.exceptions import ScrapeMasterError, PageFetchError, StrategyError, DriverInitializationError
+from scrapemaster.core import (
+    ScrapeMaster,
+    _clean_markdown_code_blocks,
+    SUPPORTED_STRATEGIES,
+    DEFAULT_STRATEGY_ORDER
+)
+from scrapemaster.exceptions import (
+    ScrapeMasterError,
+    PageFetchError,
+    StrategyError,
+    DriverInitializationError
+)
 
 
 class TestScrapeMasterSecurity(unittest.TestCase):

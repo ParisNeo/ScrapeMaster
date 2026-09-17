@@ -121,9 +121,11 @@ except ImportError:
 
 # Local Imports
 from .utils import (
-    clean_text, is_valid_url, check_for_blocker, extract_main_content_html, remove_noisy_elements,
+    clean_text, is_valid_url, check_for_blocker,
+    extract_main_content_html, remove_noisy_elements,
     resolve_safe_path, sanitize_filename,
-    DEFAULT_HEADERS, DEFAULT_CONTENT_SELECTORS, DEFAULT_TEXT_SELECTORS, DEFAULT_IMAGE_SELECTORS,
+    DEFAULT_HEADERS, DEFAULT_CONTENT_SELECTORS,
+    DEFAULT_TEXT_SELECTORS, DEFAULT_IMAGE_SELECTORS,
     DEFAULT_NOISY_SELECTORS
 )
 from .exceptions import (
@@ -160,11 +162,12 @@ def _clean_markdown_code_blocks(markdown_text: str) -> str:
 
     return "\n".join(cleaned_lines)
 
-def _parse_and_markdownify(html_content: str,
-                           content_selectors: list = DEFAULT_CONTENT_SELECTORS,
-                           noisy_selectors: list = DEFAULT_NOISY_SELECTORS,
-                           post_processors: list = None
-                           ) -> tuple[str | None, str | None]:
+def _parse_and_markdownify(
+    html_content: str,
+    content_selectors: list = DEFAULT_CONTENT_SELECTORS,
+    noisy_selectors: list = DEFAULT_NOISY_SELECTORS,
+    post_processors: list = None
+) -> tuple[str | None, str | None]:
     """Parses HTML, extracts main content, cleans noise, returns Markdown (with code block cleaning)."""
     if not html_content:
         return None, "Error: Received empty HTML content."
@@ -232,9 +235,9 @@ class ScrapeMaster:
 
         # Initialize attributes before strategy resolution (required for __del__)
         self.driver = None
-        self.current_soup = None 
-        self.html_content = "" 
-        self.last_error = None 
+        self.current_soup = None
+        self.html_content = ""
+        self.last_error = None
         self.last_strategy_used = None
 
         # Resolve strategy after URL is set
@@ -243,7 +246,14 @@ class ScrapeMaster:
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
 
-        self.user_agents = list(DEFAULT_HEADERS.values()) 
+        # Create a pool of realistic user agents (not dict values from headers)
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        ]
 
         # Content cache for deduplication
         self._content_cache = {}
@@ -422,7 +432,10 @@ class ScrapeMaster:
         self._content_cache[url] = content_hash
         return True
 
-    def scrape_structured_data(self, fetch_strategy: list[str] | str | None = None) -> dict | None:
+    def scrape_structured_data(
+        self,
+        fetch_strategy: list[str] | str | None = None
+    ) -> dict | None:
         """Extract JSON-LD, Microdata, and OpenGraph structured data from page."""
         strategy_to_use = self._resolve_strategy(fetch_strategy) if fetch_strategy else self.strategy
         if not self.current_soup:
@@ -477,7 +490,12 @@ class ScrapeMaster:
             ASCIIColors.error(f"Error extracting structured data: {e}")
             return None
 
-    def scrape_from_sitemap(self, sitemap_url: str | None = None, url_pattern: str | None = None, limit: int = 100) -> list[str]:
+    def scrape_from_sitemap(
+        self,
+         sitemap_url: str | None = None,
+         url_pattern: str | None = None,
+        limit: int = 100
+    ) -> list[str]:
         """Discover URLs from sitemap.xml and return list of URLs to scrape."""
         if not sitemap_url:
             if not self.initial_url:
@@ -525,7 +543,15 @@ class ScrapeMaster:
         ASCIIColors.success(f"Found {len(final_urls)} URLs in sitemap (limit: {limit})")
         return final_urls[:limit]
 
-    def _parse_sitemap_dict(self, data: dict, urls: list, url_pattern: str, seen: set, depth: int, limit: int):
+    def _parse_sitemap_dict(
+        self,
+        data: dict,
+        urls: list,
+        url_pattern: str,
+        seen: set,
+        depth: int,
+        limit: int
+    ):
         """Parse sitemap data structure from xmltodict."""
         if 'sitemapindex' in data:
             sub_sitemaps = data['sitemapindex'].get('sitemap', [])
@@ -544,7 +570,15 @@ class ScrapeMaster:
                 if len(urls) >= limit:
                     break
 
-    def _parse_sitemap_xml(self, root: ET.Element, urls: list, url_pattern: str, seen: set, depth: int, limit: int):
+    def _parse_sitemap_xml(
+        self,
+        root: ET.Element,
+        urls: list,
+        url_pattern: str,
+        seen: set,
+        depth: int,
+        limit: int
+    ):
         """Parse sitemap using standard ElementTree (fallback)."""
         namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
         sitemaps = root.findall('.//ns:sitemap', namespace)
@@ -561,7 +595,9 @@ class ScrapeMaster:
             if len(urls) >= limit:
                 break
 
-    def _try_playwright(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
+    def _try_playwright(
+        self
+    ) -> tuple[str | None, BeautifulSoup | None, str | None]:
         """Attempts fetching with Playwright."""
         if not PLAYWRIGHT_AVAILABLE:
             return None, None, "Playwright library not available"
@@ -595,7 +631,9 @@ class ScrapeMaster:
         except Exception as e:
             return None, None, f"Playwright error: {e}"
 
-    def _try_curl_cffi(self) -> tuple[str | None, BeautifulSoup | None, str | None]:
+    def _try_curl_cffi(
+        self
+    ) -> tuple[str | None, BeautifulSoup | None, str | None]:
         """Use curl_cffi to impersonate Chrome TLS fingerprint."""
         if not CURL_CFFI_AVAILABLE:
             return None, None, "curl_cffi not available"
@@ -619,8 +657,13 @@ class ScrapeMaster:
         except Exception as e:
             return None, None, f"curl_cffi error: {e}"
 
-    async def scrape_many_async(self, urls: list[str], max_concurrent: int = 10, 
-                                extract_markdown: bool = True, timeout: int = 30) -> list[dict]:
+    async def scrape_many_async(
+        self,
+        urls: list[str],
+         max_concurrent: int = 10,
+        extract_markdown: bool = True,
+        timeout: int = 30
+    ) -> list[dict]:
         """
         Async batch scraping with aiohttp.
         
@@ -1595,43 +1638,54 @@ tags: [scrapemaster]
     
     # --- Multi-Media Extraction Methods ---
 
-    def scrape_video(self, url_or_id: str, extract_type: str = 'auto') -> dict | None:
+    def scrape_video(
+        self,
+        url_or_id: str,
+        extract_type: str = 'auto'
+    ) -> dict | None:
         """
         Unified video scraping interface inspired by YouTube transcript API.
-        
+
         Args:
             url_or_id: YouTube URL/ID, Vimeo URL, or Twitch clip URL
             extract_type: 'auto', 'transcript', 'metadata', or 'comments'
-            
+
         Returns:
-            dict with keys: source, video_id, transcript (if available), metadata, comments
+            dict with keys: source, video_id, transcript, metadata, comments
         """
-        result = {"source": "unknown", "video_id": None, "transcript": None, "metadata": {}, "comments": []}
-        
-        # Detect platform
+        result = {
+            "source": "unknown",
+            "video_id": None,
+            "transcript": None,
+            "metadata": {},
+            "comments": []
+        }
+
         if self._is_youtube_url(url_or_id):
             result["source"] = "youtube"
             video_id = self._extract_youtube_id(url_or_id)
             result["video_id"] = video_id
-            
+
             if extract_type in ('auto', 'transcript'):
                 result["transcript"] = self.scrape_youtube_transcript(video_id)
-            
+
             if extract_type in ('auto', 'metadata') and self.initial_url:
                 result["metadata"] = self._extract_youtube_metadata(video_id)
-                
+
         elif "vimeo.com" in url_or_id:
             result["source"] = "vimeo"
             match = re.search(r'vimeo\.com/(\d+)', url_or_id)
             if match:
                 result["video_id"] = match.group(1)
-                result["metadata"] = self._extract_vimeo_metadata(result["video_id"])
-                
+                result["metadata"] = self._extract_vimeo_metadata(
+                    result["video_id"]
+                )
+
         elif "clips.twitch.tv" in url_or_id or "twitch.tv" in url_or_id:
             result["source"] = "twitch"
             if extract_type in ('auto', 'comments'):
                 result["comments"] = self._extract_twitch_chat(url_or_id)
-        
+
         return result if result["source"] != "unknown" else None
 
     def _is_youtube_url(self, url: str) -> bool:
@@ -1642,7 +1696,6 @@ tags: [scrapemaster]
         """Extract metadata from YouTube page."""
         metadata = {"id": video_id, "title": None, "author": None, "duration": None, "views": None}
         
-        # Try to fetch page for metadata
         try:
             temp_url = f"https://www.youtube.com/watch?v={video_id}"
             original_url = self.current_url
@@ -1673,9 +1726,9 @@ tags: [scrapemaster]
         """Extract metadata from Vimeo."""
         try:
             url = f"https://vimeo.com/{video_id}"
-            original = self.current_url
+            original_url = self.current_url
             self.set_url(url)
-            
+
             if self._fetch_content(['requests']):
                 structured = self.scrape_structured_data()
                 if structured and structured.get("json_ld"):
@@ -1688,13 +1741,13 @@ tags: [scrapemaster]
                                 "upload_date": item.get("uploadDate"),
                                 "duration": item.get("duration")
                             }
-            
-            if original:
-                self.set_url(original)
-                
+
+            if original_url:
+                self.set_url(original_url)
+
         except Exception as e:
             ASCIIColors.warning(f"Vimeo metadata error: {e}")
-            
+
         return {"id": video_id}
 
     def _extract_twitch_chat(self, url: str) -> list[dict]:
@@ -1703,19 +1756,27 @@ tags: [scrapemaster]
         # Real implementation would use Twitch API with client credentials
         return [{"platform": "twitch", "note": "Chat extraction requires Twitch API credentials"}]
 
-    def scrape_media_links(self, media_types: list[str] | None = None) -> dict:
+    def scrape_media_links(
+        self,
+        media_types: list[str] | None = None
+    ) -> dict:
         """
         Extract media URLs from current page (video, audio, images).
-        
+
         Args:
             media_types: Filter list ['video', 'audio', 'image']
-            
+
         Returns:
             dict with keys: videos, audios, images, embeds
         """
         if not self.current_soup:
             if not self._fetch_content(self.strategy):
-                return {"videos": [], "audios": [], "images": [], "embeds": []}
+                return {
+                    "videos": [],
+                    "audios": [],
+                    "images": [],
+                    "embeds": []
+                }
 
         if media_types is None:
             media_types = ['video', 'audio', 'image']

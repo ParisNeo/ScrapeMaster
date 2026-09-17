@@ -265,16 +265,16 @@ def clean_text(text: str | None) -> str:
 
 
 def extract_main_content_html(
-    soup: BeautifulSoup, 
+    soup: BeautifulSoup,
     content_selectors: list[str] | None = None
 ) -> tuple[Optional[Tag], Optional[str]]:
     """
-    Extract primary content container using selector priority with content validation.
-    
+    Extract primary content container using selector priority.
+
     Args:
         soup: BeautifulSoup object
         content_selectors: Ordered list of CSS selectors to try
-        
+
     Returns:
         Tuple of (element, selector_used) or (None, None) if not found
     """
