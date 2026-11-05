@@ -11,7 +11,7 @@ import asyncio
 import sqlite3
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, unquote
-from collections import deque
+from typing import Callable
 import xml.etree.ElementTree as ET
 
 # Dependency Management with pipmaster
@@ -43,7 +43,7 @@ except Exception as e:
 
 # Core Imports
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from markdownify import markdownify as md
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -135,7 +135,7 @@ from .exceptions import (
 
 # Available strategies
 SUPPORTED_STRATEGIES = ["requests", "selenium", "undetected", "wikipedia", "local_parser", "playwright", "sitemap", "curl_cffi"]
-DEFAULT_STRATEGY_ORDER = ["wikipedia", "local_parser", "requests", "playwright", "selenium", "undetected"] 
+DEFAULT_STRATEGY_ORDER = ["wikipedia", "local_parser", "requests", "curl_cffi", "playwright", "selenium", "undetected"]
 
 def _clean_markdown_code_blocks(markdown_text: str) -> str:
     """Uses regex to remove lines containing only numbers within Markdown code blocks."""
@@ -166,7 +166,7 @@ def _parse_and_markdownify(
     html_content: str,
     content_selectors: list = DEFAULT_CONTENT_SELECTORS,
     noisy_selectors: list = DEFAULT_NOISY_SELECTORS,
-    post_processors: list = None
+    post_processors: list[Callable[[str], str]] | None = None
 ) -> tuple[str | None, str | None]:
     """Parses HTML, extracts main content, cleans noise, returns Markdown (with code block cleaning)."""
     if not html_content:
@@ -177,7 +177,7 @@ def _parse_and_markdownify(
         main_content_element, used_selector = extract_main_content_html(soup, content_selectors)
 
         if not main_content_element:
-             return None, "Error: Could not find main content or body tag."
+            return None, "Error: Could not find main content or body tag."
 
         ASCIIColors.debug(f"Main content identified using selector: '{used_selector}'")
 
@@ -186,8 +186,8 @@ def _parse_and_markdownify(
 
         cleaned_text_sample = main_content_element.get_text(strip=True)[:500].lower()
         if check_for_blocker(cleaned_text_sample):
-             ASCIIColors.warning("Content container holds blocker message after cleaning.")
-             return None, f"Blocker identified within '{used_selector}' after cleaning."
+            ASCIIColors.warning("Content container holds blocker message after cleaning.")
+            return None, f"Blocker identified within '{used_selector}' after cleaning."
 
         ASCIIColors.info("Converting cleaned HTML to Markdown...")
         html_string = str(main_content_element)
@@ -220,6 +220,7 @@ class ScrapeMaster:
     smart rate limiting, content deduplication, and export pipelines.
     """
     _custom_strategies = {}
+    _CONTENT_CACHE_MAX_ENTRIES = 1000
     
     def __init__(self, url: str | None = None, strategy: list[str] | str = 'auto', headless: bool = True):
         # Ensure base packages are available (assertion for test compatibility)
@@ -240,7 +241,15 @@ class ScrapeMaster:
         self.last_error = None
         self.last_strategy_used = None
 
-        # Resolve strategy after URL is set
+        # Content cache for deduplication (initialized before strategy resolution)
+        self._content_cache = {}
+        self._strategy_cache = {}
+
+        # Rate limiting state
+        self._last_request_time = {}
+        self._consecutive_failures = {}
+
+        # Resolve strategy after URL and caches are initialized
         self.strategy = self._resolve_strategy(strategy)
 
         self.session = requests.Session()
@@ -268,7 +277,7 @@ class ScrapeMaster:
             ASCIIColors.warning("Specified 'undetected' strategy, but library is not available.")
 
     @classmethod
-    def register_strategy(cls, name: str, fetcher_func: callable):
+    def register_strategy(cls, name: str, fetcher_func: Callable[["ScrapeMaster", str], tuple]):
         """Register a custom scraping strategy.
         
         Args:
@@ -396,22 +405,34 @@ class ScrapeMaster:
         self._quit_driver()
 
     def _smart_delay(self, domain: str, attempt: int = 0):
-        """Implements exponential backoff with jitter."""
+            """Implements exponential backoff with jitter for synchronous contexts."""
+            wait = self._compute_smart_delay(domain, attempt)
+            if wait > 0:
+                ASCIIColors.debug(f"Rate limiting {domain}: waiting {wait:.2f}s")
+                time.sleep(wait)
+
+    def _compute_smart_delay(self, domain: str, attempt: int = 0) -> float:
+        """Compute the politeness wait for a domain and stamp its last-request time."""
         base_delay = 1.0
         if attempt > 0:
             delay = min(300, base_delay * (2 ** attempt)) + random.uniform(0, 1)
         else:
             delay = base_delay + random.uniform(0, 0.5)
-        
+
         now = time.time()
-        last_time = self._last_request_time.get(domain, 0)
-        time_since_last = now - last_time
+        time_since_last = now - self._last_request_time.get(domain, 0)
+        self._last_request_time[domain] = now
+
         if time_since_last < delay:
-            actual_delay = delay - time_since_last
-            ASCIIColors.debug(f"Rate limiting {domain}: waiting {actual_delay:.2f}s")
-            time.sleep(actual_delay)
-        
-        self._last_request_time[domain] = time.time()
+            return delay - time_since_last
+        return 0.0
+
+    async def _smart_delay_async(self, domain: str, attempt: int = 0):
+        """Event-loop-safe variant of _smart_delay for async contexts."""
+        wait = self._compute_smart_delay(domain, attempt)
+        if wait > 0:
+            ASCIIColors.debug(f"Rate limiting {domain}: waiting {wait:.2f}s")
+            await asyncio.sleep(wait)
 
     def _get_domain(self, url: str) -> str:
         """Extract domain for rate limiting tracking."""
@@ -425,12 +446,15 @@ class ScrapeMaster:
         return hashlib.md5(content).hexdigest()
 
     def _cache_content(self, url: str, content: bytes) -> bool:
-        """Cache content and return True if new/changed, False if duplicate."""
-        content_hash = self._content_hash(content)
-        if url in self._content_cache and self._content_cache[url] == content_hash:
-            return False
-        self._content_cache[url] = content_hash
-        return True
+            """Cache content hash with a FIFO cap; return True if new/changed, False if duplicate."""
+            content_hash = self._content_hash(content)
+            if url in self._content_cache and self._content_cache[url] == content_hash:
+                return False
+            if url not in self._content_cache and len(self._content_cache) >= self._CONTENT_CACHE_MAX_ENTRIES:
+                oldest_url = next(iter(self._content_cache))
+                del self._content_cache[oldest_url]
+            self._content_cache[url] = content_hash
+            return True
 
     def scrape_structured_data(
         self,
@@ -492,108 +516,141 @@ class ScrapeMaster:
 
     def scrape_from_sitemap(
         self,
-         sitemap_url: str | None = None,
-         url_pattern: str | None = None,
+        sitemap_url: str | None = None,
+        url_pattern: str | None = None,
         limit: int = 100
     ) -> list[str]:
-        """Discover URLs from sitemap.xml and return list of URLs to scrape."""
-        if not sitemap_url:
-            if not self.initial_url:
-                raise ValueError("No URL provided and no initial URL set")
-            parsed = urlparse(self.initial_url)
-            sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+        """Discover page URLs from an XML sitemap, recursing into sitemap index files."""
+        target = sitemap_url or self._default_sitemap_url()
+        if not target:
+            return []
 
-        if not is_valid_url(sitemap_url):
-            raise ValueError(f"Invalid sitemap URL: {sitemap_url}")
+        if not is_valid_url(target):
+            self.last_error = f"Invalid sitemap URL: {target}"
+            ASCIIColors.warning(self.last_error)
+            return []
 
-        urls = []
-        seen_sitemaps = set()
-        
-        def parse_sitemap(url: str, depth: int = 0):
-            if url in seen_sitemaps or depth > 3:
-                return
-            seen_sitemaps.add(url)
-            
+        urls: list[str] = []
+        pending: list[str] = [target]
+        seen_sitemaps: set[str] = {target}
+
+        while pending and len(urls) < limit:
+            current = pending.pop(0)
+            self._smart_delay(self._get_domain(current), 0)
+            content = self._fetch_sitemap(current)
+            if content is None:
+                continue
+            for child in self._parse_sitemap(content, urls, url_pattern, limit):
+                if child not in seen_sitemaps:
+                    seen_sitemaps.add(child)
+                    pending.append(child)
+
+        ASCIIColors.info(f"Sitemap discovery complete: {len(urls)} URLs found.")
+        return urls
+
+    def _default_sitemap_url(self) -> str | None:
+        """Infer the conventional /sitemap.xml location from the current target."""
+        base_url = self.current_url or self.initial_url
+        if not base_url:
+            self.last_error = "Cannot infer sitemap URL: no URL is set on this scraper."
+            ASCIIColors.error(self.last_error)
+            return None
+        parsed = urlparse(base_url)
+        return f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+
+    def _fetch_sitemap(self, sitemap_url: str) -> bytes | None:
+        """Fetch raw sitemap bytes; return None when the download fails."""
+        try:
+            response = self.session.get(sitemap_url, timeout=30)
+            return response.content
+        except Exception as e:
+            ASCIIColors.warning(f"Failed to fetch sitemap {sitemap_url}: {e}")
+            return None
+
+    def _parse_sitemap(
+        self,
+        content: bytes,
+        urls: list[str],
+        url_pattern: str | None,
+        limit: int
+    ) -> list[str]:
+        """Parse one sitemap document, collect page URLs, and return child sitemap URLs."""
+        if XMLTODICT_AVAILABLE:
             try:
-                response = self.session.get(url, timeout=30)
-                response.raise_for_status()
-                
-                if XMLTODICT_AVAILABLE:
-                    data = xmltodict.parse(response.content)
-                    self._parse_sitemap_dict(data, urls, url_pattern, seen_sitemaps, depth, limit)
-                else:
-                    root = ET.fromstring(response.content)
-                    self._parse_sitemap_xml(root, urls, url_pattern, seen_sitemaps, depth, limit)
-                    
+                return self._parse_sitemap_dict(xmltodict.parse(content), urls, url_pattern, limit)
             except Exception as e:
-                ASCIIColors.warning(f"Error parsing sitemap {url}: {e}")
-
-        parse_sitemap(sitemap_url)
-        
-        final_urls = []
-        for u in urls:
-            if len(final_urls) >= limit:
-                break
-            if url_pattern:
-                if re.search(url_pattern, u):
-                    final_urls.append(u)
-            else:
-                final_urls.append(u)
-        
-        ASCIIColors.success(f"Found {len(final_urls)} URLs in sitemap (limit: {limit})")
-        return final_urls[:limit]
+                ASCIIColors.debug(f"xmltodict sitemap parsing failed, falling back to ElementTree: {e}")
+        try:
+            return self._parse_sitemap_xml(ET.fromstring(content), urls, url_pattern, limit)
+        except Exception as e:
+            ASCIIColors.warning(f"Failed to parse sitemap XML: {e}")
+            return []
 
     def _parse_sitemap_dict(
-        self,
-        data: dict,
-        urls: list,
-        url_pattern: str,
-        seen: set,
-        depth: int,
-        limit: int
-    ):
-        """Parse sitemap data structure from xmltodict."""
-        if 'sitemapindex' in data:
-            sub_sitemaps = data['sitemapindex'].get('sitemap', [])
-            if not isinstance(sub_sitemaps, list):
-                sub_sitemaps = [sub_sitemaps]
-            for sitemap in sub_sitemaps[:3]:
-                if isinstance(sitemap, dict) and 'loc' in sitemap:
-                    self.parse_sitemap(sitemap['loc'], depth + 1)
-        elif 'urlset' in data:
-            url_entries = data['urlset'].get('url', [])
-            if not isinstance(url_entries, list):
-                url_entries = [url_entries]
-            for entry in url_entries:
-                if isinstance(entry, dict) and 'loc' in entry:
-                    urls.append(entry['loc'])
-                if len(urls) >= limit:
-                    break
+            self,
+            data: dict,
+            urls: list[str],
+            url_pattern: str | None,
+            limit: int
+        ) -> list[str]:
+            """Parse xmltodict sitemap data; returns child sitemap URLs for index files."""
+            if 'sitemapindex' in data:
+                sub_sitemaps = data['sitemapindex'].get('sitemap', [])
+                if not isinstance(sub_sitemaps, list):
+                    sub_sitemaps = [sub_sitemaps]
+                return [
+                    sitemap['loc']
+                    for sitemap in sub_sitemaps[:3]
+                    if isinstance(sitemap, dict) and sitemap.get('loc')
+                ]
+
+            if 'urlset' in data:
+                url_entries = data['urlset'].get('url', [])
+                if not isinstance(url_entries, list):
+                    url_entries = [url_entries]
+                for entry in url_entries:
+                    if len(urls) >= limit:
+                        break
+                    if isinstance(entry, dict):
+                        self._append_sitemap_url(entry.get('loc'), urls, url_pattern)
+
+            return []
 
     def _parse_sitemap_xml(
-        self,
-        root: ET.Element,
-        urls: list,
-        url_pattern: str,
-        seen: set,
-        depth: int,
-        limit: int
-    ):
-        """Parse sitemap using standard ElementTree (fallback)."""
-        namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-        sitemaps = root.findall('.//ns:sitemap', namespace)
-        if sitemaps:
-            for sitemap in sitemaps[:3]:
+            self,
+            root: ET.Element,
+            urls: list[str],
+            url_pattern: str | None,
+            limit: int
+        ) -> list[str]:
+            """Parse ElementTree sitemap; returns child sitemap URLs for index files."""
+            namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            child_sitemaps: list[str] = []
+
+            for sitemap in root.findall('.//ns:sitemap', namespace)[:3]:
                 loc = sitemap.find('ns:loc', namespace)
+                if loc is not None and loc.text and loc.text.strip():
+                    child_sitemaps.append(loc.text.strip())
+
+            for url_elem in root.findall('.//ns:url', namespace):
+                if len(urls) >= limit:
+                    break
+                loc = url_elem.find('ns:loc', namespace)
                 if loc is not None:
-                    self.parse_sitemap(loc.text, depth + 1)
-        
-        for url_elem in root.findall('.//ns:url', namespace):
-            loc = url_elem.find('ns:loc', namespace)
-            if loc is not None:
-                urls.append(loc.text)
-            if len(urls) >= limit:
-                break
+                    self._append_sitemap_url(loc.text, urls, url_pattern)
+
+            return child_sitemaps
+
+    def _append_sitemap_url(self, url: str | None, urls: list[str], url_pattern: str | None):
+        """Append a sitemap <loc> entry if valid and matching the pattern."""
+        if not url or not isinstance(url, str):
+            return
+        url = url.strip()
+        if not url or not is_valid_url(url):
+            return
+        if url_pattern and not re.search(url_pattern, url):
+            return
+        urls.append(url)
 
     def _try_playwright(
         self
@@ -660,7 +717,7 @@ class ScrapeMaster:
     async def scrape_many_async(
         self,
         urls: list[str],
-         max_concurrent: int = 10,
+        max_concurrent: int = 10,
         extract_markdown: bool = True,
         timeout: int = 30
     ) -> list[dict]:
@@ -683,12 +740,13 @@ class ScrapeMaster:
             async with semaphore:
                 domain = self._get_domain(url)
                 attempt = self._consecutive_failures.get(domain, 0)
-                self._smart_delay(domain, attempt)
+                await self._smart_delay_async(domain, attempt)
                 
                 try:
                     async with aiohttp.ClientSession(headers=self.session.headers) as session:
                         async with session.get(url, timeout=timeout) as response:
                             content = await response.read()
+                            self._consecutive_failures[domain] = 0
                             
                             if not self._cache_content(url, content):
                                 return {"url": url, "skipped": True, "reason": "duplicate_content"}
@@ -706,8 +764,6 @@ class ScrapeMaster:
                 except Exception as e:
                     self._consecutive_failures[domain] = self._consecutive_failures.get(domain, 0) + 1
                     return {"url": url, "error": str(e)}
-                else:
-                    self._consecutive_failures[domain] = 0
 
         tasks = [fetch_one(url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1041,7 +1097,7 @@ tags: [scrapemaster]
 
             if parsed_path.endswith(".pdf"):
                 if not PYPDF_AVAILABLE:
-                     return None, None, "PDF detected but pypdf library is missing."
+                    return None, None, "PDF detected but pypdf library is missing."
                 file_type = "PDF"
                 ASCIIColors.info("Processing as PDF...")
                 reader = PdfReader(file_stream)
@@ -1089,7 +1145,10 @@ tags: [scrapemaster]
                 return None, None, f"Non-HTML content type received: {content_type}"
 
             response.raise_for_status() 
-            html_content = response.content.decode(response.encoding or 'utf-8', errors='ignore')
+            encoding = response.encoding
+            if not encoding or encoding.lower() in ('iso-8859-1', 'ascii'):
+                encoding = response.apparent_encoding or 'utf-8'
+            html_content = response.content.decode(encoding, errors='ignore')
 
             if check_for_blocker(html_content):
                 ASCIIColors.warning("Requests: Blocker page detected.")
@@ -1315,6 +1374,8 @@ tags: [scrapemaster]
                         error_msg = "skipped (library unavailable)"
                         ASCIIColors.warning("-- Strategy: Skipping undetected-chromedriver (unavailable) --")
                         continue 
+                elif strategy_name == "sitemap":
+                    error_msg = "discovery-only strategy; use scrape_all(use_sitemap=True) or scrape_from_sitemap()"
                 else:
                     ASCIIColors.warning(f"Unknown strategy '{strategy_name}' encountered.")
                     continue
@@ -1332,8 +1393,8 @@ tags: [scrapemaster]
                     ASCIIColors.warning(f"Strategy '{strategy_name}' failed: {error_msg}")
                     continue 
                 else:
-                     self.last_error = f"{strategy_name.capitalize()}: Strategy returned unexpected empty result."
-                     ASCIIColors.error(self.last_error)
+                    self.last_error = f"{strategy_name.capitalize()}: Strategy returned unexpected empty result."
+                    ASCIIColors.error(self.last_error)
 
             except (DriverInitializationError, PageFetchError, StrategyError, ScrapeMasterError) as e:
                 self.last_error = f"{strategy_name.capitalize()} Error: {e}"
@@ -1352,14 +1413,14 @@ tags: [scrapemaster]
 
     def scrape_text(self, selectors: list[str] | None = None, fetch_strategy: list[str] | str | None = None) -> list[str]:
         strategy_to_use = self._resolve_strategy(fetch_strategy) if fetch_strategy else self.strategy
-        if not self.current_soup: 
-             if not self._fetch_content(strategy_to_use):
-                 return [] 
+        if not self.current_soup:
+            if not self._fetch_content(strategy_to_use):
+                return []
 
-        if not self.current_soup: 
-             self.last_error = "Cannot scrape text: No valid page content fetched."
-             ASCIIColors.error(self.last_error)
-             return []
+        if not self.current_soup:
+            self.last_error = "Cannot scrape text: No valid page content fetched."
+            ASCIIColors.error(self.last_error)
+            return []
 
         selectors = selectors or DEFAULT_TEXT_SELECTORS
         texts = []
@@ -1377,13 +1438,13 @@ tags: [scrapemaster]
     def scrape_images(self, selectors: list[str] | None = None, fetch_strategy: list[str] | str | None = None) -> list[str]:
         strategy_to_use = self._resolve_strategy(fetch_strategy) if fetch_strategy else self.strategy
         if not self.current_soup:
-             if not self._fetch_content(strategy_to_use):
-                 return []
+            if not self._fetch_content(strategy_to_use):
+                return []
 
         if not self.current_soup or not self.current_url:
-             self.last_error = "Cannot scrape images: No valid page content or URL."
-             ASCIIColors.error(self.last_error)
-             return []
+            self.last_error = "Cannot scrape images: No valid page content or URL."
+            ASCIIColors.error(self.last_error)
+            return []
 
         selectors = selectors or DEFAULT_IMAGE_SELECTORS
         image_urls = []
@@ -1394,9 +1455,9 @@ tags: [scrapemaster]
                     if img.has_attr('src'):
                         src = img['src']
                         if isinstance(src, str) and src.strip():
-                             abs_url = urljoin(self.current_url, src)
-                             if is_valid_url(abs_url): 
-                                 image_urls.append(abs_url)
+                            abs_url = urljoin(self.current_url, src)
+                            if is_valid_url(abs_url):
+                                image_urls.append(abs_url)
             ASCIIColors.debug(f"Scraped {len(image_urls)} image URLs using selectors: {selectors}")
         except Exception as e:
             raise ParsingError(f"Error during image scraping with selectors {selectors}: {e}") from e
@@ -1492,8 +1553,8 @@ tags: [scrapemaster]
         if max_depth == 0:
             ASCIIColors.info(f"Performing single-page scrape for: {start_url}")
             if not self._fetch_content(strategy_to_use):
-                 ASCIIColors.error("scrape_all failed: Could not fetch content for the single page.")
-                 return None 
+                ASCIIColors.error("scrape_all failed: Could not fetch content for the single page.")
+                return None
 
             results = {
                 'markdown': None, 'texts': [], 'image_urls': [],
@@ -1756,60 +1817,62 @@ tags: [scrapemaster]
         # Real implementation would use Twitch API with client credentials
         return [{"platform": "twitch", "note": "Chat extraction requires Twitch API credentials"}]
 
+    def _resolve_media_src(self, media_element: Tag) -> str | None:
+        """Resolve a media element's source to an absolute URL; None when unavailable."""
+        src = media_element.get('src')
+        if not (isinstance(src, str) and src.strip()):
+            source_tag = media_element.find('source')
+            src = source_tag.get('src') if source_tag else None
+        if not (isinstance(src, str) and src.strip()):
+            return None
+        return urljoin(self.current_url or "", src.strip())
+
     def scrape_media_links(
-        self,
-        media_types: list[str] | None = None
-    ) -> dict:
-        """
-        Extract media URLs from current page (video, audio, images).
+            self,
+            media_types: list[str] | None = None
+        ) -> dict:
+            """
+            Extract media URLs from current page (video, audio, images).
 
-        Args:
-            media_types: Filter list ['video', 'audio', 'image']
+            Args:
+                media_types: Filter list ['video', 'audio', 'image']
 
-        Returns:
-            dict with keys: videos, audios, images, embeds
-        """
-        if not self.current_soup:
-            if not self._fetch_content(self.strategy):
-                return {
-                    "videos": [],
-                    "audios": [],
-                    "images": [],
-                    "embeds": []
-                }
+            Returns:
+                dict with keys: videos, audios, images, embeds
+            """
+            if not self.current_soup:
+                if not self._fetch_content(self.strategy):
+                    return {
+                        "videos": [],
+                        "audios": [],
+                        "images": [],
+                        "embeds": []
+                    }
 
-        if media_types is None:
-            media_types = ['video', 'audio', 'image']
+            if media_types is None:
+                media_types = ['video', 'audio', 'image']
 
-        results = {"videos": [], "audios": [], "images": [], "embeds": []}
-        base_url = self.current_url or ""
+            results = {"videos": [], "audios": [], "images": [], "embeds": []}
 
-        # Videos
-        if 'video' in media_types:
-            # <video> tags
-            for video in self.current_soup.find_all('video'):
-                src = video.get('src') or video.find('source')
-                if src:
-                    src_url = src.get('src') if hasattr(src, 'get') else src
-                    results["videos"].append(urljoin(base_url, src_url))
-            # YouTube embeds
-            for iframe in self.current_soup.find_all('iframe', src=True):
-                if 'youtube.com' in iframe['src'] or 'youtu.be' in iframe['src']:
-                    results["embeds"].append({"type": "youtube", "url": iframe['src']})
+            if 'video' in media_types:
+                for video in self.current_soup.find_all('video'):
+                    src_url = self._resolve_media_src(video)
+                    if src_url:
+                        results["videos"].append(src_url)
+                for iframe in self.current_soup.find_all('iframe', src=True):
+                    if 'youtube.com' in iframe['src'] or 'youtu.be' in iframe['src']:
+                        results["embeds"].append({"type": "youtube", "url": iframe['src']})
 
-        # Audio
-        if 'audio' in media_types:
-            for audio in self.current_soup.find_all('audio'):
-                src = audio.get('src') or audio.find('source')
-                if src:
-                    src_url = src.get('src') if hasattr(src, 'get') else src
-                    results["audios"].append(urljoin(base_url, src_url))
+            if 'audio' in media_types:
+                for audio in self.current_soup.find_all('audio'):
+                    src_url = self._resolve_media_src(audio)
+                    if src_url:
+                        results["audios"].append(src_url)
 
-        # Images (enhanced from scrape_images)
-        if 'image' in media_types:
-            results["images"] = self.scrape_images()
+            if 'image' in media_types:
+                results["images"] = self.scrape_images()
 
-        return results
+            return results
 
     # --- Podcast & RSS Methods ---
 
@@ -2061,39 +2124,50 @@ tags: [scrapemaster]
         
         raise ValueError(f"Could not extract YouTube video ID from: {url_or_id}")
 
-    def get_youtube_languages(self, url_or_id: str) -> list[dict] | None:
-        """Retrieves a list of available transcript languages for a YouTube video."""
-        if not YOUTUBE_AVAILABLE:
-            ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
-            return None
-        
+    def _apply_youtube_consent_cookies(self):
+        """Set YouTube GDPR consent cookies on the requests session."""
+        if hasattr(self, 'session') and self.session:
+            self.session.cookies.set("SOCS", "CAE", domain=".youtube.com", path="/")
+            self.session.cookies.set("SOCS", "CAE", domain="youtube.com", path="/")
+            self.session.cookies.set("SOCS", "CAE", domain=".google.com", path="/")
+
+    def _build_transcript_api_client(self) -> "YouTubeTranscriptApi":
+        """Build a transcript API client wired to our session when the library supports it."""
+        self._apply_youtube_consent_cookies()
         try:
-            video_id = self._extract_youtube_id(url_or_id)
-            ASCIIColors.info(f"Fetching available transcript languages for video: {video_id}")
-            vtapi = YouTubeTranscriptApi()
-            transcript_list = vtapi.list(video_id)
-            languages = []
-            
-            def get_info(t):
-                return {
-                    "code": t.language_code,
-                    "name": t.language,
-                    "is_generated": t.is_generated,
-                    "is_translatable": t.is_translatable
-                }
+            return YouTubeTranscriptApi(request_session=self.session)
+        except TypeError:
+            return YouTubeTranscriptApi()
 
-            for t in transcript_list._manually_created_transcripts.values():
-                languages.append(get_info(t))
-                
-            for t in transcript_list._generated_transcripts.values():
-                languages.append(get_info(t))
-                
-            return languages
+    def get_youtube_languages(self, url_or_id: str) -> list[dict] | None:
+            """Retrieves a list of available transcript languages for a YouTube video."""
+            if not YOUTUBE_AVAILABLE:
+                ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
+                return None
 
-        except Exception as e:
-            self.last_error = f"Error fetching YouTube languages: {e}"
-            ASCIIColors.error(self.last_error)
-            return None
+            try:
+                video_id = self._extract_youtube_id(url_or_id)
+                ASCIIColors.info(f"Fetching available transcript languages for video: {video_id}")
+                vtapi = self._build_transcript_api_client()
+                transcript_list = vtapi.list(video_id)
+
+                def get_info(transcript) -> dict:
+                    return {
+                        "code": transcript.language_code,
+                        "name": transcript.language,
+                        "is_generated": transcript.is_generated,
+                        "is_translatable": transcript.is_translatable
+                    }
+
+                transcripts = list(transcript_list)
+                languages = [get_info(t) for t in transcripts if not t.is_generated]
+                languages += [get_info(t) for t in transcripts if t.is_generated]
+                return languages
+
+            except Exception as e:
+                self.last_error = f"Error fetching YouTube languages: {e}"
+                ASCIIColors.error(self.last_error)
+                return None
 
     def scrape_youtube_transcript(self, url_or_id: str, language_code: str | None = None) -> str | None:
         """Scrapes the transcript text from a YouTube video with GDPR bypass."""
@@ -2101,14 +2175,7 @@ tags: [scrapemaster]
             ASCIIColors.warning("YouTube transcript scraping requires 'youtube-transcript-api'. Please install it.")
             return None
 
-        # Set session cookies before transcript fetch to bypass GDPR consent
-        # The library uses the session's cookies when making requests
-        if hasattr(self, 'session') and self.session:
-            self.session.cookies.set("SOCS", "CAE", domain=".youtube.com", path="/")
-            self.session.cookies.set("SOCS", "CAE", domain="youtube.com", path="/")
-            self.session.cookies.set("SOCS", "CAE", domain=".google.com", path="/")
-
-        vtapi = YouTubeTranscriptApi()
+        vtapi = self._build_transcript_api_client()
         try:
             video_id = self._extract_youtube_id(url_or_id)
             ASCIIColors.info(f"Fetching transcript for video: {video_id}")
@@ -2161,9 +2228,11 @@ tags: [scrapemaster]
         ASCIIColors.debug(f"Set User-Agent: {ua}")
 
     def use_proxy(self, proxy: str):
-        """Sets a proxy for the requests session."""
-        self.session.proxies = {'http': proxy, 'https': proxy}
-        ASCIIColors.info(f"Using proxy: {proxy}")
+            """Sets a proxy for the requests session after basic validation."""
+            if not isinstance(proxy, str) or not proxy.strip():
+                raise ValueError("Invalid proxy: expected a non-empty string")
+            self.session.proxies = {'http': proxy, 'https': proxy}
+            ASCIIColors.info(f"Using proxy: {proxy}")
 
     def save_cookies(self, filename: str = 'cookies.json'):
         """Saves the requests session cookies to a JSON file safely."""
@@ -2205,37 +2274,39 @@ tags: [scrapemaster]
             ASCIIColors.error(f"Unexpected error loading cookies: {e}")
 
     def save_selenium_cookies(self, filename: str = 'selenium_cookies.json'):
-        """Saves Selenium cookies to a JSON file."""
-        if not self.driver:
-            ASCIIColors.warning("Cannot save Selenium cookies: Driver not active.")
-            return
-        try:
-            cookies = self.driver.get_cookies()
-            with open(filename, 'w') as f:
-                json.dump(cookies, f, indent=4)
-            ASCIIColors.info(f"Selenium cookies saved to {filename}")
-        except Exception as e:
-            ASCIIColors.error(f"Failed to save Selenium cookies: {e}")
+            """Saves Selenium cookies to a JSON file safely."""
+            if not self.driver:
+                ASCIIColors.warning("Cannot save Selenium cookies: Driver not active.")
+                return
+            try:
+                safe_path = resolve_safe_path(Path(filename).parent, Path(filename).name)
+                cookies = self.driver.get_cookies()
+                with open(safe_path, 'w', encoding='utf-8') as f:
+                    json.dump(cookies, f, indent=4)
+                ASCIIColors.info(f"Selenium cookies saved to {safe_path}")
+            except Exception as e:
+                ASCIIColors.error(f"Failed to save Selenium cookies: {e}")
 
     def load_selenium_cookies(self, filename: str = 'selenium_cookies.json'):
-        """Loads Selenium cookies from a JSON file. Requires driver to be active."""
-        if not self.driver:
-            ASCIIColors.warning("Cannot load Selenium cookies: Driver not active. Fetch page first.")
-            return
-        try:
-            with open(filename, 'r') as f:
-                cookies = json.load(f)
-            for cookie in cookies:
-                try:
-                    self.driver.add_cookie(cookie)
-                except Exception as e_add:
-                    ASCIIColors.warning(f"Could not add cookie {cookie.get('name', 'N/A')}: {e_add}")
-            ASCIIColors.info(f"Selenium cookies loaded from {filename}")
-            self.driver.refresh() 
-        except FileNotFoundError:
-            ASCIIColors.warning(f"Selenium cookie file not found: {filename}")
-        except Exception as e:
-            ASCIIColors.error(f"Failed to load Selenium cookies: {e}")
+            """Loads Selenium cookies from a JSON file. Requires driver to be active."""
+            if not self.driver:
+                ASCIIColors.warning("Cannot load Selenium cookies: Driver not active. Fetch page first.")
+                return
+            try:
+                safe_path = resolve_safe_path(Path(filename).parent, Path(filename).name)
+                with open(safe_path, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                for cookie in cookies:
+                    try:
+                        self.driver.add_cookie(cookie)
+                    except Exception as e_add:
+                        ASCIIColors.warning(f"Could not add cookie {cookie.get('name', 'N/A')}: {e_add}")
+                ASCIIColors.info(f"Selenium cookies loaded from {safe_path}")
+                self.driver.refresh()
+            except FileNotFoundError:
+                ASCIIColors.warning(f"Selenium cookie file not found: {filename}")
+            except Exception as e:
+                ASCIIColors.error(f"Failed to load Selenium cookies: {e}")
 
 
     def download_images(self, image_urls: list[str], output_dir: str):

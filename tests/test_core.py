@@ -10,7 +10,6 @@ import os
 from scrapemaster.core import (
     ScrapeMaster,
     _clean_markdown_code_blocks,
-    SUPPORTED_STRATEGIES,
     DEFAULT_STRATEGY_ORDER
 )
 from scrapemaster.exceptions import (
@@ -137,11 +136,10 @@ class TestScrapeMasterCore(unittest.TestCase):
     
     @patch('scrapemaster.core.pm.ensure_packages')
     def test_initialization_defaults(self, mock_ensure_packages):
-        """Test default initialization sets URL and strategy list correctly."""
+        """Test default initialization: auto strategy equals DEFAULT_STRATEGY_ORDER minus 'wikipedia'."""
         scraper = ScrapeMaster("http://example.com")
         self.assertEqual(scraper.current_url, "http://example.com")
-        # Auto mode now includes local_parser and playwright by default
-        expected = ['local_parser', 'requests', 'playwright', 'selenium', 'undetected']
+        expected = [s for s in DEFAULT_STRATEGY_ORDER if s != 'wikipedia']
         self.assertEqual(scraper.strategy, expected)
         self.assertTrue(scraper.headless)
         mock_ensure_packages.assert_called_once()

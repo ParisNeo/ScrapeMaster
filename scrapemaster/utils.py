@@ -7,8 +7,8 @@ import re
 import hashlib
 from functools import lru_cache
 from pathlib import Path
-from typing import Union, Optional, Final
-from urllib.parse import urlparse, unquote, urljoin, urlunparse
+from typing import Optional, Final
+from urllib.parse import urlparse, urljoin, urlunparse
 from bs4 import BeautifulSoup, Tag
 from ascii_colors import ASCIIColors
 
@@ -75,42 +75,49 @@ NOISY_SELECTORS: Final[list[str]] = [
 DEFAULT_NOISY_SELECTORS: Final[list[str]] = NOISY_SELECTORS
 
 # Enhanced blocker detection: Cloudflare, Incapsula, Distil, AWS WAF, etc.
-# Note: Case-insensitive matching is handled by lowercasing input, but we keep original casing for reference
-BLOCKER_PHRASES: Final[list[str]] = [
-    "please enable javascript",
-    "javascript is disabled", 
-    "javascript is required",
-    "enable cookies to continue",
-    "cookies are disabled",
+# Note: Case-insensitive matching is handled by lowercasing input, but we keep original casing for reference.
+# Strong phrases are near-definitive challenge markers; weak phrases also occur in legitimate content.
+_STRONG_BLOCKER_PHRASES: Final[list[str]] = [
     "browser check running",
     "checking your browser",
     "checking if the site connection is secure",
-    "cloudflare",  # Matches "Cloudflare", "cloudflare", "CLOUDFLARE"
     "attention required! cloudflare",
     "just a moment",
     "verify you are human",
     "security challenge",
     "verify you are a real visitor",
-    "access denied",
-    "403 forbidden",
-    "error 403",
     "please complete the security check",
-    "captcha verification",
-    "recaptcha",
-    "hcaptcha",
     "incapsula incident id",
     "distil networks",
     "pardon our interruption",
-    "automated queries",
-    "unusual traffic",
-    "bot detected",
     "checking browser",  # Matches "Checking browser..." from test cases
 ]
+
+_WEAK_BLOCKER_PHRASES: Final[list[str]] = [
+    "please enable javascript",
+    "javascript is disabled",
+    "javascript is required",
+    "enable cookies to continue",
+    "cookies are disabled",
+    "cloudflare",  # Matches "Cloudflare", "cloudflare", "CLOUDFLARE"
+    "access denied",
+    "403 forbidden",
+    "error 403",
+    "captcha verification",
+    "recaptcha",
+    "hcaptcha",
+    "automated queries",
+    "unusual traffic",
+    "bot detected"
+]
+
+BLOCKER_PHRASES: Final[list[str]] = _STRONG_BLOCKER_PHRASES + _WEAK_BLOCKER_PHRASES
 
 # Pre-compiled regex patterns for performance
 _WHITESPACE_RE: Final[re.Pattern] = re.compile(r'\s+')
 _CONTROL_CHAR_RE: Final[re.Pattern] = re.compile(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]')
-_SAFE_FILENAME_RE: Final[re.Pattern] = re.compile(r'[^\w\-.]')
+_SAFE_FILENAME_RE: Final[re.Pattern] = re.compile(r'[^\w\-./]')
+_BLOCKER_SPARSE_PAGE_CHARS: Final[int] = 2500
 
 # --- Security & Validation ---
 
@@ -178,7 +185,7 @@ def sanitize_filename(filename: str, max_length: int = 255, replacement: str = '
     safe_name = '_'.join(parts) if parts else 'download'
     
     # Replace remaining invalid characters with replacement char
-    safe_name = re.sub(r'[^\w\-./]', replacement, safe_name)
+    safe_name = _SAFE_FILENAME_RE.sub(replacement, safe_name)
     
     # Collapse multiple replacement chars
     safe_name = re.sub(re.escape(replacement) + r'{2,}', replacement, safe_name)
@@ -352,27 +359,37 @@ def remove_noisy_elements(
 def check_for_blocker(html_content: str | None) -> bool:
     """
     Detect if HTML contains bot-blocking or challenge page content.
-    
-    Checks for Cloudflare, Incapsula, Distil, custom captchas, and forced JS redirects.
-    Case-insensitive matching ensures "Cloudflare", "cloudflare", "CLOUDFLARE" all match.
-    
+
+    Detection layers, ordered by signal strength:
+    1. Any blocker phrase inside the <title> tag (e.g. "Just a moment...").
+    2. A sparse page (visible text under _BLOCKER_SPARSE_PAGE_CHARS chars) holding any phrase.
+    3. A content-rich page only when at least two strong challenge phrases are present,
+       so legitimate articles mentioning Cloudflare or captchas are not flagged.
+
+    Case-insensitive matching: "Cloudflare", "cloudflare", "CLOUDFLARE" all match.
+
     Args:
         html_content: Raw HTML string
-        
+
     Returns:
-        True if blocker detected, False otherwise
+        True if a blocker is detected, False otherwise
     """
     if not html_content or not isinstance(html_content, str):
         return False
-        
-    # Limit scan to first 16KB for performance (blockers usually appear immediately)
+
     sample = html_content[:16384].lower()
-    
-    # Check for exact phrases (case-insensitive via lowercase comparison)
-    if any(phrase.lower() in sample for phrase in BLOCKER_PHRASES):
+
+    title_match = re.search(r'<title[^>]*>(.*?)</title>', sample, re.IGNORECASE | re.DOTALL)
+    if title_match and any(phrase in title_match.group(1) for phrase in BLOCKER_PHRASES):
         return True
-        
-    return False
+
+    visible_text = re.sub(r'<[^>]+>', ' ', sample).strip()
+
+    if len(visible_text) < _BLOCKER_SPARSE_PAGE_CHARS:
+        return any(phrase in visible_text for phrase in BLOCKER_PHRASES)
+
+    strong_hits = sum(1 for phrase in _STRONG_BLOCKER_PHRASES if phrase in visible_text)
+    return strong_hits >= 2
 
 
 def is_probably_binary(content: bytes) -> bool:
